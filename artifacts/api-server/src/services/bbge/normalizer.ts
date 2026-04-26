@@ -107,25 +107,22 @@ export function normalize(params: {
     platform !== "generic"
   );
 
-  // Collect warnings
+  // Collect warnings — pipeline warnings are already included; only add novel ones here
   const allWarnings = [...warnings];
-  if (ai?.skipped && ai.skip_reason) {
-    allWarnings.push(`AI extraction skipped: ${ai.skip_reason}`);
-  }
-  if (ai?.error) {
-    allWarnings.push(`AI extraction error: ${ai.error}`);
-  }
-  if (browser?.error) {
-    allWarnings.push(`Browser extraction error: ${browser.error}`);
-  }
-  if (metadata?.error) {
-    allWarnings.push(`Metadata extraction error: ${metadata.error}`);
-  }
+
   if (scored.confidence_score < 40) {
     allWarnings.push(
       "Extraction confidence is low. In the next phase, BBGE will allow guided screenshot upload or mobile share-sheet capture to fill missing fields."
     );
   }
+
+  // Deduplicate warnings (preserve order, remove exact duplicates)
+  const seen = new Set<string>();
+  const dedupedWarnings = allWarnings.filter((w) => {
+    if (seen.has(w)) return false;
+    seen.add(w);
+    return true;
+  });
 
   return {
     success: true,
@@ -150,7 +147,7 @@ export function normalize(params: {
       methods_attempted: methodsAttempted,
       fields_found: scored.fields_found,
       fields_missing: scored.fields_missing,
-      warnings: allWarnings,
+      warnings: dedupedWarnings,
     },
     evidence: {
       screenshot_url: screenshotUrl,

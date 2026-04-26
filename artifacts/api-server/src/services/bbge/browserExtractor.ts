@@ -9,7 +9,6 @@ import { logger } from "../../lib/logger.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCREENSHOTS_DIR = path.resolve(__dirname, "../../storage/screenshots");
 
-// Ensure screenshots directory exists
 if (!fs.existsSync(SCREENSHOTS_DIR)) {
   fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
 }
@@ -24,7 +23,9 @@ export interface BrowserResult {
   error: string | null;
 }
 
-const BROWSER_TIMEOUT_MS = 45000;
+const DESKTOP_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
 const MAX_IMAGES = 20;
 
 export async function extractWithBrowser(url: string): Promise<BrowserResult> {
@@ -39,8 +40,9 @@ export async function extractWithBrowser(url: string): Promise<BrowserResult> {
   };
 
   let browser = null;
+  let context = null;
+
   try {
-    // Dynamically import playwright to avoid import errors if not installed
     const { chromium } = await import("playwright");
 
     browser = await chromium.launch({
@@ -62,69 +64,106 @@ export async function extractWithBrowser(url: string): Promise<BrowserResult> {
       ],
     });
 
-    const context = await browser.newContext({
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      viewport: { width: 1280, height: 900 },
+    context = await browser.newContext({
+      viewport: { width: 1440, height: 2200 },
+      userAgent: DESKTOP_UA,
     });
 
     const page = await context.newPage();
 
-    // Block unnecessary resource types to speed up loading
+    // Block fonts and stylesheets to speed up load
     await page.route("**/*", (route) => {
-      const resourceType = route.request().resourceType();
-      if (["font", "stylesheet"].includes(resourceType)) {
+      const type = route.request().resourceType();
+      if (["font", "stylesheet"].includes(type)) {
         route.abort();
       } else {
         route.continue();
       }
     });
 
-    await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: BROWSER_TIMEOUT_MS,
-    });
+    // First attempt: domcontentloaded
+    let gotoSucceeded = false;
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+      gotoSucceeded = true;
+    } catch (gotoErr: unknown) {
+      const gotoMsg = gotoErr instanceof Error ? gotoErr.message : String(gotoErr);
+      logger.warn({ url, error: gotoMsg }, "Browser goto (domcontentloaded) failed — retrying with load");
 
-    // Wait a bit for JS rendering
-    await page.waitForTimeout(2000);
+      // Retry with waitUntil: 'load'
+      try {
+        await page.goto(url, { waitUntil: "load", timeout: 30000 });
+        gotoSucceeded = true;
+      } catch (retryErr: unknown) {
+        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        logger.warn({ url, error: retryMsg }, "Browser goto retry (load) also failed");
+      }
+    }
 
+    // Wait for JS rendering regardless of goto outcome (page may still have partial content)
+    try {
+      await page.waitForTimeout(2500);
+    } catch {
+      // ignore
+    }
+
+    // Collect all data BEFORE any close calls
     result.page_url = page.url();
-    result.title = await page.title();
 
-    // Extract visible text from body
-    result.visible_text = await page.evaluate(() => {
-      const body = document.body;
-      if (!body) return null;
-      // Remove script and style elements text
-      const clone = body.cloneNode(true) as HTMLElement;
-      clone.querySelectorAll("script, style, noscript").forEach((el) => el.remove());
-      return (clone.textContent || "").replace(/\s+/g, " ").trim().slice(0, 10000);
-    });
+    try {
+      result.title = await page.title();
+    } catch {
+      result.title = null;
+    }
 
-    // Extract image URLs
-    result.images = await page.evaluate((maxImages) => {
-      const imgs = Array.from(document.querySelectorAll("img"));
-      return imgs
-        .map((img) => img.src || img.getAttribute("data-src") || "")
-        .filter((src) => src && src.startsWith("http") && !src.includes("data:"))
-        .filter((src) => !src.includes("icon") && !src.includes("logo") && !src.includes("pixel"))
-        .slice(0, maxImages);
-    }, MAX_IMAGES);
+    try {
+      const html = await page.content();
+      // Strip tags for visible text approximation
+      result.visible_text = html
+        .replace(/<script[\s\S]*?<\/script>/gi, "")
+        .replace(/<style[\s\S]*?<\/style>/gi, "")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 10000);
+    } catch {
+      result.visible_text = null;
+    }
 
-    // Capture screenshot
-    const screenshotFilename = `${uuidv4()}.png`;
-    const screenshotPath = path.join(SCREENSHOTS_DIR, screenshotFilename);
+    try {
+      result.images = await page.locator("img").evaluateAll(
+        (imgs, maxImages) =>
+          (imgs as HTMLImageElement[])
+            .map((img) => img.src || img.getAttribute("data-src") || "")
+            .filter(
+              (src) =>
+                src &&
+                src.startsWith("http") &&
+                !src.includes("data:") &&
+                !src.includes("icon") &&
+                !src.includes("logo") &&
+                !src.includes("pixel"),
+            )
+            .slice(0, maxImages),
+        MAX_IMAGES,
+      );
+    } catch {
+      result.images = [];
+    }
 
-    await page.screenshot({
-      path: screenshotPath,
-      type: "png",
-      fullPage: false,
-    });
+    try {
+      const screenshotFilename = `${uuidv4()}.png`;
+      const screenshotPath = path.join(SCREENSHOTS_DIR, screenshotFilename);
+      await page.screenshot({ path: screenshotPath, type: "png", fullPage: false });
+      result.screenshot_filename = screenshotFilename;
+      result.screenshot_path = screenshotPath;
+    } catch {
+      // Screenshot failure is non-fatal
+    }
 
-    result.screenshot_filename = screenshotFilename;
-    result.screenshot_path = screenshotPath;
-
-    await context.close();
+    if (!gotoSucceeded) {
+      result.error = "Rendered browser extraction unavailable.";
+    }
   } catch (err: unknown) {
     const raw = err instanceof Error ? err.message : String(err);
     const isLaunchFailure =
@@ -135,16 +174,15 @@ export async function extractWithBrowser(url: string): Promise<BrowserResult> {
       raw.includes("error while loading shared libraries");
     result.error = isLaunchFailure
       ? "Playwright launch failed in current environment."
-      : raw.slice(0, 300);
+      : "Rendered browser extraction unavailable.";
     logger.warn({ url, error: raw }, "Browser extraction failed");
   } finally {
-    if (browser) {
-      try {
-        await browser.close();
-      } catch {
-        // Ignore close errors
-      }
-    }
+    try {
+      await context?.close();
+    } catch {}
+    try {
+      await browser?.close();
+    } catch {}
   }
 
   return result;

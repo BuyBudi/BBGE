@@ -42,13 +42,13 @@ export async function runExtractionPipeline(
       logger.info({ url, method }, "Running metadata extraction");
       metadataResult = await extractMetadata(url);
       if (metadataResult.error) {
-        warnings.push(`Metadata extraction encountered an issue: ${metadataResult.error}`);
+        warnings.push(metadataResult.error);
       }
     } else if (method === "rendered_browser") {
       logger.info({ url, method }, "Running browser extraction");
       browserResult = await extractWithBrowser(url);
       if (browserResult.error) {
-        warnings.push(`Browser extraction encountered an issue: ${browserResult.error}`);
+        warnings.push(browserResult.error);
       }
     } else if (method === "ai_vision") {
       if (!isOpenAiConfigured()) {
