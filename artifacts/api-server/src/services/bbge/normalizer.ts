@@ -100,6 +100,7 @@ export function normalize(params: {
   const { url, platform, platform_confidence, methodsAttempted, metadata, browser, ai, screenshotUrl, warnings } = params;
 
   const is_blocked = browser?.is_blocked ?? false;
+  const retry_succeeded = browser?.retry_succeeded ?? false;
 
   // Merge fields: AI → browser selector → metadata
   const title = ai?.title || browser?.title || metadata?.title || null;
@@ -145,17 +146,28 @@ export function normalize(params: {
     platform !== "generic",
   );
 
-  // Cap confidence at 45 if the page appears blocked (unless AI vision succeeded)
+  // Cap confidence when blocked:
+  //   - blocked + retry not yet tried or retry also blocked → max 20
+  //   - but if retry succeeded, no cap
+  //   - AI vision success overrides any cap
   const aiSucceeded = ai && !ai.skipped && !ai.error;
   const rawScore = scored.confidence_score;
-  const confidence_score = is_blocked && !aiSucceeded ? Math.min(45, rawScore) : rawScore;
+  let confidence_score = rawScore;
+  if (is_blocked && !aiSucceeded) {
+    // retry_succeeded=false means either retry wasn't tried or it also failed
+    confidence_score = retry_succeeded ? rawScore : Math.min(20, rawScore);
+  }
 
   // Warnings
   const allWarnings = [...warnings];
 
-  if (is_blocked) {
+  if (is_blocked && !retry_succeeded) {
     allWarnings.push(
-      "Marketplace page may be blocked or gated. Extraction may be incomplete.",
+      "This marketplace is challenging automated access. BBGE attempted alternate retrieval methods but the page may still be gated. Extraction may be incomplete.",
+    );
+  } else if (is_blocked && retry_succeeded) {
+    allWarnings.push(
+      "Initial request was blocked — alternate retrieval succeeded. Some fields may still be missing.",
     );
   }
 

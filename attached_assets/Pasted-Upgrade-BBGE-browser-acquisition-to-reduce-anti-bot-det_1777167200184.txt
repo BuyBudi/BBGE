@@ -1,0 +1,128 @@
+Upgrade BBGE browser acquisition to reduce anti-bot detection and improve access to real marketplace pages.
+
+Current issue:
+Some sites return “Pardon our interruption” instead of listing content.
+
+Do not change frontend styling.
+
+==================================================
+1. Replace headless mode strategy
+==================================================
+
+Use Playwright launch options:
+
+const browser = await chromium.launch({
+  headless: true,
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage'
+  ]
+})
+
+==================================================
+2. Use realistic browser context
+==================================================
+
+const context = await browser.newContext({
+  viewport: { width: 1366, height: 2200 },
+  locale: 'en-AU',
+  timezoneId: 'Australia/Perth',
+  colorScheme: 'light',
+  deviceScaleFactor: 1,
+  hasTouch: false,
+  isMobile: false,
+  userAgent: latest realistic Chrome Windows UA
+})
+
+==================================================
+3. Humanize page behaviour
+==================================================
+
+Before extraction:
+
+await page.goto(url, { waitUntil:'domcontentloaded', timeout:30000 })
+
+await page.waitForTimeout(random 1800-3500ms)
+
+simulate:
+- small mouse move
+- slight scroll down
+- slight scroll up
+
+Then wait 1200ms
+
+==================================================
+4. Detect block pages
+==================================================
+
+If page text contains:
+
+Pardon our interruption
+verify yourself
+captcha
+robot check
+access denied
+temporarily blocked
+
+Then:
+
+A. mark blocked=true
+B. retry once with a fresh context
+C. use alternate user agent
+D. wait longer
+
+==================================================
+5. Add request throttling
+==================================================
+
+Never hammer pages.
+
+Only one extraction at a time.
+
+==================================================
+6. Resource filtering
+==================================================
+
+Block heavy assets:
+
+fonts
+tracking scripts
+ads
+
+But allow:
+images
+main scripts
+xhr
+
+==================================================
+7. Screenshot before giving up
+==================================================
+
+Always capture screenshot.
+
+==================================================
+8. UI Message
+==================================================
+
+If blocked:
+
+“This marketplace is challenging automated access. BBGE is attempting alternate retrieval methods.”
+
+==================================================
+9. Confidence logic
+==================================================
+
+If blocked page detected:
+max confidence 20 until retry succeeds.
+
+==================================================
+10. Logging
+==================================================
+
+Backend logs only:
+blocked page detected
+retry attempt
+retry success/fail
+
+Restart app.
