@@ -33,6 +33,7 @@ export interface NormalizedListing {
     selector_debug: Record<string, string>;
     field_sources: Record<string, string>;
     is_blocked: boolean;
+    ai_recovery_used: boolean;
   };
   evidence: {
     screenshot_url: string | null;
@@ -46,7 +47,6 @@ export interface NormalizedListing {
   };
 }
 
-/** Track which extraction layer provided each field */
 function buildFieldSources(params: {
   title: string | null;
   price: string | null;
@@ -56,8 +56,9 @@ function buildFieldSources(params: {
   ai: AiVisionResult | null;
   browser: BrowserResult | null;
   metadata: MetadataResult | null;
+  aiRecoveryUsed: boolean;
 }): Record<string, string> {
-  const { title, price, description, seller_name, location, ai, browser, metadata } = params;
+  const { title, price, description, seller_name, location, ai, browser, metadata, aiRecoveryUsed } = params;
   const sources: Record<string, string> = {};
 
   if (title) {
@@ -67,6 +68,7 @@ function buildFieldSources(params: {
   }
   if (price) {
     if (ai?.price) sources["price"] = "ai_vision";
+    else if (browser?.selector_debug?.["price"] === "fb_ai_recovery") sources["price"] = "ai_recovery";
     else if (browser?.price) sources["price"] = `browser:${browser.selector_debug?.["price"] ?? "selector"}`;
   }
   if (description) {
@@ -76,12 +78,17 @@ function buildFieldSources(params: {
   }
   if (seller_name) {
     if (ai?.seller_name) sources["seller_name"] = "ai_vision";
+    else if (browser?.selector_debug?.["seller_name"] === "fb_ai_recovery") sources["seller_name"] = "ai_recovery";
     else if (browser?.seller_name) sources["seller_name"] = `browser:${browser.selector_debug?.["seller_name"] ?? "selector"}`;
   }
   if (location) {
     if (ai?.location) sources["location"] = "ai_vision";
+    else if (browser?.selector_debug?.["location"] === "fb_ai_recovery") sources["location"] = "ai_recovery";
     else if (browser?.location) sources["location"] = `browser:${browser.selector_debug?.["location"] ?? "selector"}`;
   }
+
+  // Add a top-level note if AI recovery contributed
+  if (aiRecoveryUsed) sources["_ai_recovery"] = "fb_ai_recovery";
 
   return sources;
 }
@@ -96,8 +103,20 @@ export function normalize(params: {
   ai: AiVisionResult | null;
   screenshotUrl: string | null;
   warnings: string[];
+  aiRecoveryUsed?: boolean;
 }): NormalizedListing {
-  const { url, platform, platform_confidence, methodsAttempted, metadata, browser, ai, screenshotUrl, warnings } = params;
+  const {
+    url,
+    platform,
+    platform_confidence,
+    methodsAttempted,
+    metadata,
+    browser,
+    ai,
+    screenshotUrl,
+    warnings,
+    aiRecoveryUsed = false,
+  } = params;
 
   const is_blocked = browser?.is_blocked ?? false;
   const retry_succeeded = browser?.retry_succeeded ?? false;
@@ -130,11 +149,13 @@ export function normalize(params: {
   let method_detail = "none";
   if (ai && !ai.skipped && !ai.error) {
     method_used = "ai_vision";
-    method_detail = "ai_vision";
+    method_detail = aiRecoveryUsed ? "ai_vision + fb_ai_recovery" : "ai_vision";
   } else if (browser && !browser.error) {
     method_used = "rendered_browser";
     const sel = browser.platform_selector_used || "generic";
-    method_detail = `rendered_browser + ${sel}_selector`;
+    method_detail = aiRecoveryUsed
+      ? `rendered_browser + ${sel}_selector + fb_ai_recovery`
+      : `rendered_browser + ${sel}_selector`;
   } else if (metadata && !metadata.error) {
     method_used = "metadata";
     method_detail = "metadata";
@@ -147,15 +168,19 @@ export function normalize(params: {
   );
 
   // Cap confidence when blocked:
-  //   - blocked + retry not yet tried or retry also blocked → max 20
-  //   - but if retry succeeded, no cap
+  //   - blocked + retry also failed → max 20
+  //   - retry succeeded → no cap from block
   //   - AI vision success overrides any cap
   const aiSucceeded = ai && !ai.skipped && !ai.error;
-  const rawScore = scored.confidence_score;
-  let confidence_score = rawScore;
+  let confidence_score = scored.confidence_score;
+
   if (is_blocked && !aiSucceeded) {
-    // retry_succeeded=false means either retry wasn't tried or it also failed
-    confidence_score = retry_succeeded ? rawScore : Math.min(20, rawScore);
+    confidence_score = retry_succeeded ? confidence_score : Math.min(20, confidence_score);
+  }
+
+  // Facebook-specific cap: if price AND seller_name both missing, cap at 55
+  if (platform === "facebook" && !price && !seller_name && !aiSucceeded) {
+    confidence_score = Math.min(55, confidence_score);
   }
 
   // Warnings
@@ -185,7 +210,11 @@ export function normalize(params: {
   });
 
   // Field sources attribution
-  const field_sources = buildFieldSources({ title, price, description, seller_name, location, ai, browser: browser ?? null, metadata: metadata ?? null });
+  const field_sources = buildFieldSources({
+    title, price, description, seller_name, location,
+    ai, browser: browser ?? null, metadata: metadata ?? null,
+    aiRecoveryUsed,
+  });
 
   // Selector debug
   const selectorDebug: Record<string, string> = { ...(browser?.selector_debug ?? {}) };
@@ -218,6 +247,7 @@ export function normalize(params: {
       selector_debug: selectorDebug,
       field_sources,
       is_blocked,
+      ai_recovery_used: aiRecoveryUsed,
     },
     evidence: {
       screenshot_url: screenshotUrl,

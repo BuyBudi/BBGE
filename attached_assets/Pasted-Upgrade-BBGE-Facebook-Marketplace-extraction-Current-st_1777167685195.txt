@@ -1,0 +1,116 @@
+Upgrade BBGE Facebook Marketplace extraction.
+
+Current state:
+title, images and description work.
+Need stronger extraction of price, seller_name and location.
+
+Do not break existing working flow.
+
+==================================================
+1. Add screenshot-first AI recovery path
+==================================================
+
+If platform = facebook_marketplace
+and any of these missing:
+price
+seller_name
+location
+
+Then if OPENAI_API_KEY exists:
+
+Use latest screenshot and visible text.
+
+Ask AI to return JSON only:
+
+{
+  "price": null,
+  "seller_name": null,
+  "location": null,
+  "confidence": 0,
+  "notes": []
+}
+
+Rules:
+- Do not guess.
+- Only use visible evidence.
+- If uncertain return null.
+
+==================================================
+2. Improve visible text regex extraction
+==================================================
+
+Search visible text for price:
+
+$650
+$1,250
+AUD 900
+Free
+
+Ignore:
+shipping
+discount
+save $
+
+==================================================
+3. Seller detection
+==================================================
+
+Look for nearby lines around:
+
+Seller details
+Marketplace profile
+Joined Facebook
+Send message
+View seller profile
+
+Return probable seller name.
+
+==================================================
+4. Location detection
+==================================================
+
+Look for nearby lines:
+
+Perth WA
+Canning Vale
+Subiaco
+5 kilometres away
+Pickup in ...
+
+==================================================
+5. Delay render timing
+==================================================
+
+For Facebook only:
+
+after page load:
+wait extra 3500ms
+slow scroll halfway
+wait 1200ms
+scroll top
+
+Then extract again.
+
+==================================================
+6. Confidence logic
+==================================================
+
+If title + price + images + seller:
+80+
+
+If title + images only:
+55 max
+
+==================================================
+7. UI
+==================================================
+
+Show:
+Recovered by AI Vision
+if AI fills missing fields.
+
+==================================================
+8. If no OPENAI_API_KEY
+keep current warning.
+
+Restart app.

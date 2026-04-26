@@ -44,6 +44,7 @@ type ExtractResult = BbgeExtractResult & {
     selector_debug?: Record<string, string>;
     field_sources?: Record<string, string>;
     is_blocked?: boolean;
+    ai_recovery_used?: boolean;
   };
 };
 
@@ -284,6 +285,16 @@ export default function Home() {
                       {methodDetail}
                     </Badge>
                   </div>
+
+                  {/* AI Recovery badge */}
+                  {result.extraction.ai_recovery_used && (
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-muted-foreground shrink-0">Recovery</span>
+                      <Badge variant="outline" className="bg-violet-500/10 text-violet-400 border-violet-500/30 text-[10px] font-semibold">
+                        Recovered by AI Vision
+                      </Badge>
+                    </div>
+                  )}
 
                   <Separator className="bg-muted" />
 

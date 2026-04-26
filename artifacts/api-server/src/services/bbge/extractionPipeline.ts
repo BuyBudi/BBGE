@@ -4,6 +4,7 @@ import { detectPlatform } from "./platformDetector.js";
 import { extractMetadata } from "./metadataExtractor.js";
 import { extractWithBrowser } from "./browserExtractor.js";
 import { extractWithAiVision, isOpenAiConfigured } from "./aiVisionExtractor.js";
+import { runFacebookAiRecovery, type FbAiRecoveryResult } from "./facebookAiRecovery.js";
 import { normalize, type NormalizedListing } from "./normalizer.js";
 import { logger } from "../../lib/logger.js";
 import type { ExtractionMethod } from "../../config/bbge/platformConfigs.js";
@@ -34,6 +35,7 @@ export async function runExtractionPipeline(
   let metadataResult = null;
   let browserResult = null;
   let aiResult = null;
+  let fbAiRecovery: FbAiRecoveryResult | null = null;
 
   for (const method of methodOrder as ExtractionMethod[]) {
     methodsAttempted.push(method);
@@ -46,10 +48,58 @@ export async function runExtractionPipeline(
       }
     } else if (method === "rendered_browser") {
       logger.info({ url, method, platform: detection.platform }, "Running browser extraction");
-      // Pass detected platform so the extractor can use the right selector module
       browserResult = await extractWithBrowser(url, detection.platform);
       if (browserResult.error) {
         warnings.push(browserResult.error);
+      }
+
+      // Facebook AI recovery: targeted call to fill missing price/seller/location
+      if (
+        detection.platform === "facebook" &&
+        browserResult &&
+        !browserResult.error &&
+        !browserResult.is_blocked &&
+        isOpenAiConfigured()
+      ) {
+        const needsRecovery =
+          !browserResult.price || !browserResult.seller_name || !browserResult.location;
+
+        if (needsRecovery) {
+          logger.info(
+            {
+              url,
+              missing: [
+                !browserResult.price && "price",
+                !browserResult.seller_name && "seller_name",
+                !browserResult.location && "location",
+              ].filter(Boolean),
+            },
+            "Facebook AI recovery triggered for missing fields",
+          );
+
+          fbAiRecovery = await runFacebookAiRecovery(
+            browserResult.screenshot_path,
+            browserResult.visible_text,
+          );
+
+          if (fbAiRecovery.error) {
+            logger.warn({ error: fbAiRecovery.error }, "Facebook AI recovery encountered an error");
+          } else if (!fbAiRecovery.skipped) {
+            // Patch browser result with recovered fields (only where still missing)
+            if (!browserResult.price && fbAiRecovery.price) {
+              browserResult.price = fbAiRecovery.price;
+              browserResult.selector_debug["price"] = "fb_ai_recovery";
+            }
+            if (!browserResult.seller_name && fbAiRecovery.seller_name) {
+              browserResult.seller_name = fbAiRecovery.seller_name;
+              browserResult.selector_debug["seller_name"] = "fb_ai_recovery";
+            }
+            if (!browserResult.location && fbAiRecovery.location) {
+              browserResult.location = fbAiRecovery.location;
+              browserResult.selector_debug["location"] = "fb_ai_recovery";
+            }
+          }
+        }
       }
     } else if (method === "ai_vision") {
       if (!isOpenAiConfigured()) {
@@ -78,6 +128,13 @@ export async function runExtractionPipeline(
   const screenshotFilename = browserResult?.screenshot_filename || null;
   const screenshotUrl = getScreenshotUrl(screenshotFilename, requestBaseUrl);
 
+  // Determine if AI recovery filled any fields
+  const aiRecoveryUsed =
+    fbAiRecovery !== null &&
+    !fbAiRecovery.skipped &&
+    !fbAiRecovery.error &&
+    (!!fbAiRecovery.price || !!fbAiRecovery.seller_name || !!fbAiRecovery.location);
+
   const normalized = normalize({
     url,
     platform: detection.platform,
@@ -88,6 +145,7 @@ export async function runExtractionPipeline(
     ai: aiResult,
     screenshotUrl,
     warnings,
+    aiRecoveryUsed,
   });
 
   logger.info(
@@ -97,6 +155,7 @@ export async function runExtractionPipeline(
       method_used: normalized.extraction.method_used,
       method_detail: normalized.extraction.method_detail,
       confidence: normalized.extraction.confidence_score,
+      ai_recovery_used: aiRecoveryUsed,
     },
     "BBGE extraction pipeline complete",
   );

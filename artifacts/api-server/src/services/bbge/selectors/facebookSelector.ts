@@ -1,11 +1,110 @@
 // Facebook Marketplace platform-specific field extractor
+// Note: Facebook heavily obfuscates class names; we rely on text patterns + aria roles + visible text.
 
 import type { Page } from "playwright";
 import type { SelectorExtractResult } from "./types.js";
 import { cleanText, detectBlockedPage } from "./types.js";
 
-const PRICE_REGEX = /(?:AUD|USD|CAD|GBP|EUR|NZD)?\s*\$[\d,]+(?:\.\d{1,2})?|\$[\d,]+(?:\.\d{1,2})?|AUD\s*[\d,]+/gi;
-const SELLER_CONTEXT_LABELS = ["Seller", "Listed by", "Joined", "Profile", "Member since"];
+// Price: handle $650, $1,250, AUD 900, Free — filter out noise
+const PRICE_REGEX =
+  /\bFree\b|(?:AUD|USD|CAD|GBP|EUR|NZD)\s*[\d,]+(?:\.\d{1,2})?|(?:AUD|USD|\$)\s*[\d,]+(?:\.\d{1,2})?|\$[\d,]+(?:\.\d{1,2})?/gi;
+
+const PRICE_IGNORE_WORDS = ["shipping", "discount", "save $", "postage", "delivery", "fee"];
+
+// Seller context: Facebook's dynamic class names change constantly; use text signals
+const SELLER_LABELS = [
+  "Seller details",
+  "Marketplace profile",
+  "Joined Facebook",
+  "Send message",
+  "View seller profile",
+  "Listed by",
+  "Member since",
+];
+
+// Location: suburb names, distance phrases, pickup phrases
+const LOCATION_LABELS = [
+  "listed in",
+  "pickup in",
+  "pickup from",
+  "kilometres away",
+  "kilometers away",
+  "km away",
+  "located in",
+];
+
+function extractPriceFromText(text: string): string | null {
+  const lines = text.split(/\n/);
+  for (const line of lines) {
+    const low = line.toLowerCase();
+    if (PRICE_IGNORE_WORDS.some((w) => low.includes(w))) continue;
+    const matches = line.match(PRICE_REGEX);
+    if (matches && matches.length > 0) {
+      return matches[0].trim();
+    }
+  }
+  return null;
+}
+
+function extractSellerFromText(text: string): string | null {
+  for (const label of SELLER_LABELS) {
+    const idx = text.toLowerCase().indexOf(label.toLowerCase());
+    if (idx === -1) continue;
+
+    // The seller name is typically on the SAME or NEXT line as the label
+    const segment = text.slice(idx, idx + 200);
+    const lines = segment.split(/\n/).map((l) => l.trim()).filter(Boolean);
+
+    // First line is the label itself; the name might be in the same line after a colon
+    // or the very next non-empty line
+    for (let i = 0; i < Math.min(lines.length, 4); i++) {
+      const line = lines[i];
+      // Skip the label line itself and generic UI text
+      const skip = [
+        label.toLowerCase(),
+        "view seller profile",
+        "send message",
+        "see all",
+        "details",
+        "profile",
+        "facebook",
+      ];
+      if (skip.some((s) => line.toLowerCase().includes(s))) continue;
+      if (line.length > 1 && line.length < 60) {
+        return cleanText(line);
+      }
+    }
+  }
+  return null;
+}
+
+function extractLocationFromText(text: string): string | null {
+  const lower = text.toLowerCase();
+
+  // Look for "N kilometres away" — take the suburb that usually appears before it
+  const distMatch = text.match(/(\d+)\s*(?:kilometres|kilometers|km)\s*away/i);
+  if (distMatch) {
+    const idx = text.indexOf(distMatch[0]);
+    // Look back up to 80 chars for a suburb name
+    const before = text.slice(Math.max(0, idx - 80), idx);
+    const lines = before.split(/\n/).map((l) => l.trim()).filter(Boolean);
+    const suburb = lines[lines.length - 1];
+    if (suburb && suburb.length > 1 && suburb.length < 60) return suburb;
+  }
+
+  // Look for "Listed in ...", "Pickup in ...", "Pickup from ..."
+  for (const label of LOCATION_LABELS) {
+    const idx = lower.indexOf(label);
+    if (idx === -1) continue;
+    const after = text.slice(idx + label.length, idx + label.length + 80).trim();
+    const firstPart = after.split(/[\n,·•]/)[0].trim();
+    if (firstPart && firstPart.length > 1 && firstPart.length < 60) {
+      return cleanText(firstPart);
+    }
+  }
+
+  return null;
+}
 
 export async function extractFacebook(
   page: Page,
@@ -18,7 +117,39 @@ export async function extractFacebook(
   try { pageTitle = await page.title(); } catch {}
   const is_blocked = detectBlockedPage(visibleText, pageTitle);
 
-  // Title
+  // ----- FACEBOOK EXTRA RENDER WAIT -----
+  // Facebook's React app can take longer to hydrate listings
+  if (!is_blocked) {
+    try {
+      await page.waitForTimeout(3500);
+      // Slow scroll to roughly 50% of page height
+      await page.evaluate(() => {
+        const half = document.body.scrollHeight / 2;
+        window.scrollTo({ top: half, behavior: "smooth" });
+      });
+      await page.waitForTimeout(1200);
+      // Scroll back to top before extracting
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: "smooth" }));
+      await page.waitForTimeout(600);
+    } catch {}
+
+    // Re-collect visible text after scroll (page may have lazy-loaded content)
+    try {
+      const freshHtml = await page.content();
+      const freshText = freshHtml
+        .replace(/<script[\s\S]*?<\/script>/gi, "")
+        .replace(/<style[\s\S]*?<\/style>/gi, "")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 15000);
+      if (freshText.length > visibleText.length) {
+        visibleText = freshText;
+      }
+    } catch {}
+  }
+
+  // ----- TITLE -----
   let title: string | null = null;
   try {
     const h1 = page.locator("h1").first();
@@ -35,33 +166,67 @@ export async function extractFacebook(
     } catch {}
   }
 
-  // Price — regex on visible text
+  // ----- PRICE -----
   let price: string | null = null;
-  const priceMatches = visibleText.match(PRICE_REGEX);
-  if (priceMatches && priceMatches.length > 0) {
-    price = priceMatches[0].trim();
-    debug["price"] = "regex:price_pattern";
-  }
 
-  // Seller
-  let seller_name: string | null = null;
-  for (const label of SELLER_CONTEXT_LABELS) {
-    const idx = visibleText.indexOf(label);
-    if (idx !== -1) {
-      const after = visibleText.slice(idx + label.length, idx + label.length + 80).trim();
-      const candidate = after.split(/[\n.]/)[0].trim();
-      if (candidate && candidate.length > 1 && candidate.length < 60) {
-        seller_name = cleanText(candidate);
-        debug["seller_name"] = `text_context:${label}`;
-        break;
-      }
+  // Try aria-label on price elements first
+  try {
+    const priceEl = page.locator("[aria-label*='price' i], [aria-label*='Price' i]").first();
+    if ((await priceEl.count()) > 0) {
+      const text = cleanText(await priceEl.innerText({ timeout: 2000 }));
+      if (text) { price = text; debug["price"] = "aria-label:price"; }
+    }
+  } catch {}
+
+  // Visible text regex (line-by-line with filter)
+  if (!price && !is_blocked) {
+    const fromText = extractPriceFromText(visibleText);
+    if (fromText) {
+      price = fromText;
+      debug["price"] = "visible_text_regex";
     }
   }
 
-  // Description
+  // ----- SELLER -----
+  let seller_name: string | null = null;
+
+  // Try aria-label patterns
+  try {
+    const sellerEl = page.locator("[aria-label*='seller' i], [aria-label*='profile' i]").first();
+    if ((await sellerEl.count()) > 0) {
+      const text = cleanText(await sellerEl.getAttribute("aria-label"));
+      if (text && text.length < 60) { seller_name = text; debug["seller_name"] = "aria-label:seller"; }
+    }
+  } catch {}
+
+  // Visible text context
+  if (!seller_name && !is_blocked) {
+    const fromText = extractSellerFromText(visibleText);
+    if (fromText) {
+      seller_name = fromText;
+      debug["seller_name"] = "visible_text_context";
+    }
+  }
+
+  // ----- LOCATION -----
+  let location: string | null = null;
+
+  if (!is_blocked) {
+    const fromText = extractLocationFromText(visibleText);
+    if (fromText) {
+      location = fromText;
+      debug["location"] = "visible_text_context";
+    }
+  }
+
+  // ----- DESCRIPTION -----
   let description: string | null = null;
   try {
-    const descEl = page.locator("[data-testid='marketplace-pdp-description'], [class*='description']").first();
+    const descEl = page
+      .locator(
+        "[data-testid='marketplace-pdp-description'], [aria-label*='description' i], [class*='description']",
+      )
+      .first();
     if ((await descEl.count()) > 0) {
       description = cleanText(await descEl.innerText({ timeout: 2000 }));
       if (description) debug["description"] = "[data-testid='marketplace-pdp-description']";
@@ -75,15 +240,7 @@ export async function extractFacebook(
     }
   }
 
-  // Location — Facebook often shows city in the listing
-  let location: string | null = null;
-  const locIdx = visibleText.toLowerCase().indexOf("listed in ");
-  if (locIdx !== -1) {
-    const after = visibleText.slice(locIdx + 10, locIdx + 60).split(/[\n,]/)[0].trim();
-    if (after) { location = after; debug["location"] = "text_context:listed_in"; }
-  }
-
-  // Images
+  // ----- IMAGES -----
   let images: string[] = [];
   try {
     images = await page.locator("img[src]").evaluateAll(
@@ -95,7 +252,9 @@ export async function extractFacebook(
               src.startsWith("http") &&
               (src.includes("fbcdn") || src.includes("scontent")) &&
               !src.includes("icon") &&
-              !src.includes("emoji"),
+              !src.includes("emoji") &&
+              !src.includes("s_") &&
+              src.length > 40,
           )
           .slice(0, 20),
     );
