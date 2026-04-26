@@ -24,7 +24,7 @@ export interface BrowserResult {
   error: string | null;
 }
 
-const BROWSER_TIMEOUT_MS = 30000;
+const BROWSER_TIMEOUT_MS = 45000;
 const MAX_IMAGES = 20;
 
 export async function extractWithBrowser(url: string): Promise<BrowserResult> {
@@ -45,15 +45,20 @@ export async function extractWithBrowser(url: string): Promise<BrowserResult> {
 
     browser = await chromium.launch({
       headless: true,
+      timeout: 45000,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
-        "--disable-accelerated-2d-canvas",
-        "--no-first-run",
-        "--no-zygote",
-        "--single-process",
         "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-features=site-per-process",
+        "--single-process",
+        "--no-zygote",
       ],
     });
 
@@ -121,9 +126,17 @@ export async function extractWithBrowser(url: string): Promise<BrowserResult> {
 
     await context.close();
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    result.error = msg;
-    logger.warn({ url, error: msg }, "Browser extraction failed");
+    const raw = err instanceof Error ? err.message : String(err);
+    const isLaunchFailure =
+      raw.includes("Failed to launch") ||
+      raw.includes("ERR_LAUNCH") ||
+      raw.includes("spawn") ||
+      raw.includes("ENOENT") ||
+      raw.includes("error while loading shared libraries");
+    result.error = isLaunchFailure
+      ? "Playwright launch failed in current environment."
+      : raw.slice(0, 300);
+    logger.warn({ url, error: raw }, "Browser extraction failed");
   } finally {
     if (browser) {
       try {
