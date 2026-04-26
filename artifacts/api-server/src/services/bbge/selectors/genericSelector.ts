@@ -2,14 +2,22 @@
 
 import type { Page } from "playwright";
 import type { SelectorExtractResult } from "./types.js";
-import { tryAttrSelectors, cleanText } from "./types.js";
+import { tryAttrSelectors, cleanText, detectBlockedPage } from "./types.js";
 
 const PRICE_REGEX = /(?:AUD|USD|CAD|GBP|EUR|NZD)?\s*\$[\d,]+(?:\.\d{1,2})?|\$[\d,]+(?:\.\d{1,2})?|AUD\s*[\d,]+/gi;
 
-export async function extractGeneric(page: Page): Promise<SelectorExtractResult> {
+export async function extractGeneric(
+  page: Page,
+  _html: string,
+  visibleText: string,
+): Promise<SelectorExtractResult> {
   const debug: Record<string, string> = {};
 
-  // Title — og:title first, then h1, then page title
+  let pageTitle: string | null = null;
+  try { pageTitle = await page.title(); } catch {}
+  const is_blocked = detectBlockedPage(visibleText, pageTitle);
+
+  // Title
   const ogTitle = await tryAttrSelectors(page, [
     { sel: "meta[property='og:title']", attr: "content" },
     { sel: "meta[name='title']", attr: "content" },
@@ -27,7 +35,7 @@ export async function extractGeneric(page: Page): Promise<SelectorExtractResult>
     } catch {}
   }
 
-  // Description — og:description first, then meta description
+  // Description
   const ogDesc = await tryAttrSelectors(page, [
     { sel: "meta[property='og:description']", attr: "content" },
     { sel: "meta[name='description']", attr: "content" },
@@ -35,32 +43,21 @@ export async function extractGeneric(page: Page): Promise<SelectorExtractResult>
   const description = cleanText(ogDesc.value);
   if (ogDesc.matched && description) debug["description"] = ogDesc.matched;
 
-  // Image — og:image
-  const ogImage = await tryAttrSelectors(page, [
-    { sel: "meta[property='og:image']", attr: "content" },
-  ]);
-  const ogImageUrl = ogImage.value;
-  if (ogImage.matched && ogImageUrl) debug["images"] = ogImage.matched;
-
-  // Price — regex over visible text
+  // Price
   let price: string | null = null;
-  let visibleText = "";
-  try {
-    visibleText = await page.evaluate(() => {
-      const body = document.body;
-      const clone = body.cloneNode(true) as HTMLElement;
-      clone.querySelectorAll("script, style, noscript").forEach((el) => el.remove());
-      return (clone.textContent ?? "").replace(/\s+/g, " ").trim();
-    });
-  } catch {}
-
   const priceMatches = visibleText.match(PRICE_REGEX);
   if (priceMatches && priceMatches.length > 0) {
     price = priceMatches[0].trim();
     debug["price"] = "regex:price_pattern";
   }
 
-  // Images — og image + page images
+  // Images
+  const ogImage = await tryAttrSelectors(page, [
+    { sel: "meta[property='og:image']", attr: "content" },
+  ]);
+  const ogImageUrl = ogImage.value;
+  if (ogImage.matched && ogImageUrl) debug["images"] = ogImage.matched;
+
   const images: string[] = [];
   if (ogImageUrl && ogImageUrl.startsWith("http")) images.push(ogImageUrl);
   try {
@@ -85,7 +82,9 @@ export async function extractGeneric(page: Page): Promise<SelectorExtractResult>
     price,
     description,
     seller_name: null,
+    location: null,
     images: images.slice(0, 20),
+    is_blocked,
     selector_debug: debug,
   };
 }

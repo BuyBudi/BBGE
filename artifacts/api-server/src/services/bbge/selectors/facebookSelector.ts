@@ -1,31 +1,24 @@
 // Facebook Marketplace platform-specific field extractor
-// Facebook aggressively uses dynamic class names, so we rely heavily on
-// visible text parsing and regex rather than CSS selectors alone.
 
 import type { Page } from "playwright";
 import type { SelectorExtractResult } from "./types.js";
-import { cleanText } from "./types.js";
+import { cleanText, detectBlockedPage } from "./types.js";
 
 const PRICE_REGEX = /(?:AUD|USD|CAD|GBP|EUR|NZD)?\s*\$[\d,]+(?:\.\d{1,2})?|\$[\d,]+(?:\.\d{1,2})?|AUD\s*[\d,]+/gi;
 const SELLER_CONTEXT_LABELS = ["Seller", "Listed by", "Joined", "Profile", "Member since"];
 
-export async function extractFacebook(page: Page): Promise<SelectorExtractResult> {
+export async function extractFacebook(
+  page: Page,
+  _html: string,
+  visibleText: string,
+): Promise<SelectorExtractResult> {
   const debug: Record<string, string> = {};
 
-  // Grab full visible text of the page
-  let visibleText = "";
-  try {
-    visibleText = await page.evaluate(() => {
-      const body = document.body;
-      const clone = body.cloneNode(true) as HTMLElement;
-      clone.querySelectorAll("script, style, noscript").forEach((el) => el.remove());
-      return (clone.textContent ?? "").replace(/\s+/g, " ").trim();
-    });
-  } catch {
-    visibleText = "";
-  }
+  let pageTitle: string | null = null;
+  try { pageTitle = await page.title(); } catch {}
+  const is_blocked = detectBlockedPage(visibleText, pageTitle);
 
-  // Title — try h1 or og:title
+  // Title
   let title: string | null = null;
   try {
     const h1 = page.locator("h1").first();
@@ -50,7 +43,7 @@ export async function extractFacebook(page: Page): Promise<SelectorExtractResult
     debug["price"] = "regex:price_pattern";
   }
 
-  // Seller — look for context labels in text, then grab the next word/phrase
+  // Seller
   let seller_name: string | null = null;
   for (const label of SELLER_CONTEXT_LABELS) {
     const idx = visibleText.indexOf(label);
@@ -65,7 +58,7 @@ export async function extractFacebook(page: Page): Promise<SelectorExtractResult
     }
   }
 
-  // Description — try aria-label or visible text block after title
+  // Description
   let description: string | null = null;
   try {
     const descEl = page.locator("[data-testid='marketplace-pdp-description'], [class*='description']").first();
@@ -75,12 +68,19 @@ export async function extractFacebook(page: Page): Promise<SelectorExtractResult
     }
   } catch {}
   if (!description && visibleText.length > 200) {
-    // Fall back to a block of text that seems like a listing description
     const lines = visibleText.split(". ").filter((l) => l.trim().length > 20);
     if (lines.length > 0) {
       description = cleanText(lines.slice(0, 5).join(". "));
       if (description) debug["description"] = "visible_text_heuristic";
     }
+  }
+
+  // Location — Facebook often shows city in the listing
+  let location: string | null = null;
+  const locIdx = visibleText.toLowerCase().indexOf("listed in ");
+  if (locIdx !== -1) {
+    const after = visibleText.slice(locIdx + 10, locIdx + 60).split(/[\n,]/)[0].trim();
+    if (after) { location = after; debug["location"] = "text_context:listed_in"; }
   }
 
   // Images
@@ -104,5 +104,5 @@ export async function extractFacebook(page: Page): Promise<SelectorExtractResult
     images = [];
   }
 
-  return { title, price, description, seller_name, images, selector_debug: debug };
+  return { title, price, description, seller_name, location, images, is_blocked, selector_debug: debug };
 }

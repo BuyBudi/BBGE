@@ -31,6 +31,8 @@ export interface NormalizedListing {
     fields_missing: string[];
     warnings: string[];
     selector_debug: Record<string, string>;
+    field_sources: Record<string, string>;
+    is_blocked: boolean;
   };
   evidence: {
     screenshot_url: string | null;
@@ -42,6 +44,46 @@ export interface NormalizedListing {
     browser: Record<string, unknown>;
     ai: Record<string, unknown>;
   };
+}
+
+/** Track which extraction layer provided each field */
+function buildFieldSources(params: {
+  title: string | null;
+  price: string | null;
+  description: string | null;
+  seller_name: string | null;
+  location: string | null;
+  ai: AiVisionResult | null;
+  browser: BrowserResult | null;
+  metadata: MetadataResult | null;
+}): Record<string, string> {
+  const { title, price, description, seller_name, location, ai, browser, metadata } = params;
+  const sources: Record<string, string> = {};
+
+  if (title) {
+    if (ai?.title) sources["title"] = "ai_vision";
+    else if (browser?.title) sources["title"] = `browser:${browser.selector_debug?.["title"] ?? "page_title"}`;
+    else if (metadata?.title) sources["title"] = "metadata";
+  }
+  if (price) {
+    if (ai?.price) sources["price"] = "ai_vision";
+    else if (browser?.price) sources["price"] = `browser:${browser.selector_debug?.["price"] ?? "selector"}`;
+  }
+  if (description) {
+    if (ai?.description) sources["description"] = "ai_vision";
+    else if (browser?.description) sources["description"] = `browser:${browser.selector_debug?.["description"] ?? "selector"}`;
+    else if (metadata?.description) sources["description"] = "metadata";
+  }
+  if (seller_name) {
+    if (ai?.seller_name) sources["seller_name"] = "ai_vision";
+    else if (browser?.seller_name) sources["seller_name"] = `browser:${browser.selector_debug?.["seller_name"] ?? "selector"}`;
+  }
+  if (location) {
+    if (ai?.location) sources["location"] = "ai_vision";
+    else if (browser?.location) sources["location"] = `browser:${browser.selector_debug?.["location"] ?? "selector"}`;
+  }
+
+  return sources;
 }
 
 export function normalize(params: {
@@ -57,42 +99,21 @@ export function normalize(params: {
 }): NormalizedListing {
   const { url, platform, platform_confidence, methodsAttempted, metadata, browser, ai, screenshotUrl, warnings } = params;
 
-  // Merge fields: AI takes priority, then browser (structured), then metadata
-  const title =
-    ai?.title ||
-    browser?.title ||
-    metadata?.title ||
-    null;
+  const is_blocked = browser?.is_blocked ?? false;
 
-  // Price — AI first, then browser selector (new structured field)
-  const price =
-    ai?.price ||
-    browser?.price ||
-    null;
-
-  // Description — AI first, then browser selector, then metadata
-  const description =
-    ai?.description ||
-    browser?.description ||
-    metadata?.description ||
-    null;
-
-  // Seller — AI first, then browser selector
-  const seller_name =
-    ai?.seller_name ||
-    browser?.seller_name ||
-    null;
+  // Merge fields: AI → browser selector → metadata
+  const title = ai?.title || browser?.title || metadata?.title || null;
+  const price = ai?.price || browser?.price || null;
+  const description = ai?.description || browser?.description || metadata?.description || null;
+  const seller_name = ai?.seller_name || browser?.seller_name || null;
+  const location = ai?.location || browser?.location || null;
 
   const seller_profile_url = ai?.seller_profile_url || null;
-  const location = ai?.location || null;
   const category = ai?.category || null;
   const condition = ai?.condition || null;
   const listed_date_or_age = ai?.listed_date_or_age || null;
 
-  const canonical_url =
-    metadata?.canonical_url ||
-    browser?.page_url ||
-    null;
+  const canonical_url = metadata?.canonical_url || browser?.page_url || null;
 
   // Merge images
   const imageSet = new Set<string>();
@@ -103,7 +124,7 @@ export function normalize(params: {
 
   const risk_relevant_observations = ai?.risk_relevant_observations || [];
 
-  // Determine primary method used
+  // Method used
   let method_used = "none";
   let method_detail = "none";
   if (ai && !ai.skipped && !ai.error) {
@@ -111,28 +132,39 @@ export function normalize(params: {
     method_detail = "ai_vision";
   } else if (browser && !browser.error) {
     method_used = "rendered_browser";
-    const selectorUsed = browser.platform_selector_used || "generic";
-    method_detail = `rendered_browser + ${selectorUsed}_selector`;
+    const sel = browser.platform_selector_used || "generic";
+    method_detail = `rendered_browser + ${sel}_selector`;
   } else if (metadata && !metadata.error) {
     method_used = "metadata";
     method_detail = "metadata";
   }
 
-  // Score confidence
+  // Confidence scoring
   const scored = scoreConfidence(
     { title, price, description, seller_name, location, images },
     platform !== "generic",
   );
 
-  // Collect warnings — pipeline warnings are already included; only add novel ones here
+  // Cap confidence at 45 if the page appears blocked (unless AI vision succeeded)
+  const aiSucceeded = ai && !ai.skipped && !ai.error;
+  const rawScore = scored.confidence_score;
+  const confidence_score = is_blocked && !aiSucceeded ? Math.min(45, rawScore) : rawScore;
+
+  // Warnings
   const allWarnings = [...warnings];
-  if (scored.confidence_score < 40) {
+
+  if (is_blocked) {
+    allWarnings.push(
+      "Marketplace page may be blocked or gated. Extraction may be incomplete.",
+    );
+  }
+
+  if (confidence_score < 40) {
     allWarnings.push(
       "Extraction confidence is low. In the next phase, BBGE will allow guided screenshot upload or mobile share-sheet capture to fill missing fields.",
     );
   }
 
-  // Deduplicate warnings (preserve order)
   const seen = new Set<string>();
   const dedupedWarnings = allWarnings.filter((w) => {
     if (seen.has(w)) return false;
@@ -140,10 +172,11 @@ export function normalize(params: {
     return true;
   });
 
-  // Merge selector debug from browser
-  const selectorDebug: Record<string, string> = {
-    ...(browser?.selector_debug ?? {}),
-  };
+  // Field sources attribution
+  const field_sources = buildFieldSources({ title, price, description, seller_name, location, ai, browser: browser ?? null, metadata: metadata ?? null });
+
+  // Selector debug
+  const selectorDebug: Record<string, string> = { ...(browser?.selector_debug ?? {}) };
 
   return {
     success: true,
@@ -163,7 +196,7 @@ export function normalize(params: {
     images,
     risk_relevant_observations,
     extraction: {
-      confidence_score: scored.confidence_score,
+      confidence_score,
       method_used,
       method_detail,
       methods_attempted: methodsAttempted,
@@ -171,6 +204,8 @@ export function normalize(params: {
       fields_missing: scored.fields_missing,
       warnings: dedupedWarnings,
       selector_debug: selectorDebug,
+      field_sources,
+      is_blocked,
     },
     evidence: {
       screenshot_url: screenshotUrl,

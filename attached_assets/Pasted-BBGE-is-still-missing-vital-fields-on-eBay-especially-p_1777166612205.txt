@@ -1,0 +1,141 @@
+BBGE is still missing vital fields on eBay, especially price, seller_name and location.
+
+Upgrade the eBay extractor to use layered field-specific extraction instead of relying only on simple selectors.
+
+Do not change the working Playwright lifecycle.
+
+Tasks:
+
+1. Add a new service:
+server/services/platformExtractors/ebayExtractor.js
+
+2. The eBay extractor must receive:
+- page
+- html
+- visibleText
+- metadata
+
+3. Extract PRICE using all of these approaches in order:
+
+A. Selector candidates:
+- [data-testid="x-price-primary"] span
+- .x-price-primary span
+- .x-price-primary
+- [itemprop="price"]
+- meta[property="product:price:amount"]
+- meta[property="og:price:amount"]
+
+B. Visible text regex:
+Search visibleText for price patterns:
+- AU $12,345
+- A$12,345
+- AUD $12,345
+- $12,345.00
+
+Ignore false matches such as:
+- postage
+- shipping
+- delivery
+- returns
+- ebay
+- sponsored
+
+C. HTML regex fallback:
+Search html for:
+- "convertedCurrentPrice"
+- "currentPrice"
+- "price"
+- "value"
+
+Return the first plausible listing price.
+
+4. Extract SELLER using all of these approaches:
+
+A. Selector candidates:
+- [data-testid="x-sellercard-atf"] a
+- .x-sellercard-atf__info__about-seller a
+- .x-sellercard-atf a
+- [aria-label*="seller" i]
+- a[href*="/str/"]
+- a[href*="usr/"]
+
+B. Visible text parsing:
+Look for lines near:
+- Seller information
+- About this seller
+- Registered as a business seller
+- Seller's other items
+
+Extract likely seller name from nearby lines.
+
+5. Extract LOCATION using all of these approaches:
+
+A. Selector candidates:
+- [data-testid*="location" i]
+- [class*="location" i]
+- [class*="item-location" i]
+
+B. Visible text parsing:
+Look for lines near:
+- Located in:
+- Item location:
+- Postage from:
+- Ships from:
+
+Return the most likely location.
+
+6. Extract DESCRIPTION more robustly:
+
+Try:
+- iframe content where eBay loads item description
+- #desc_ifr
+- #viTabs_0_is
+- [itemprop="description"]
+- visible text section after “About this item”
+
+7. Extract IMAGES:
+
+Use:
+- img[src*="i.ebayimg.com"]
+- source[srcset*="i.ebayimg.com"]
+
+Normalize image URLs:
+- remove duplicate URLs
+- prefer largest size if size variants exist
+- return max 12 images
+
+8. Add source attribution per field in raw.debug:
+
+raw.debug.field_sources = {
+  title: "...",
+  price: "...",
+  seller_name: "...",
+  location: "...",
+  description: "...",
+  images: "..."
+}
+
+9. Improve UI so missing vital fields are shown as:
+- price: Critical
+- seller_name: Critical
+- location: Important
+- images: Critical
+
+10. Add a visible warning when a marketplace page appears to be blocked, interrupted, or consent-gated.
+
+Detection text:
+- "Pardon our interruption"
+- "Please verify yourself"
+- "Sign in"
+- "Access denied"
+- "Robot"
+- "Captcha"
+
+If detected, show:
+"Marketplace page may be blocked or gated. Extraction may be incomplete."
+
+11. If block/gate is detected, lower confidence to maximum 45 unless AI Vision succeeds.
+
+12. Do not show “No price” as an extracted result unless a price truly cannot be found.
+
+13. Restart the app.

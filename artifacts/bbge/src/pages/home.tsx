@@ -42,7 +42,18 @@ type ExtractResult = BbgeExtractResult & {
   extraction: BbgeExtractResult["extraction"] & {
     method_detail?: string;
     selector_debug?: Record<string, string>;
+    field_sources?: Record<string, string>;
+    is_blocked?: boolean;
   };
+};
+
+const FIELD_SEVERITY: Record<string, { label: string; className: string }> = {
+  price:       { label: "Critical", className: "bg-red-600/20 text-red-400 border-red-500/40" },
+  seller_name: { label: "Critical", className: "bg-red-600/20 text-red-400 border-red-500/40" },
+  images:      { label: "Critical", className: "bg-red-600/20 text-red-400 border-red-500/40" },
+  location:    { label: "Important", className: "bg-amber-500/15 text-amber-400 border-amber-500/30" },
+  description: { label: "Important", className: "bg-amber-500/15 text-amber-400 border-amber-500/30" },
+  title:       { label: "Standard", className: "bg-muted/50 text-muted-foreground border-muted" },
 };
 
 export default function Home() {
@@ -235,6 +246,17 @@ export default function Home() {
         {result && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
 
+            {/* Block / gate warning banner */}
+            {result.extraction.is_blocked && (
+              <Alert className="bg-orange-500/10 border-orange-500/30 text-orange-400">
+                <AlertCircle className="h-4 w-4" />
+                <AlertTitle className="font-semibold">Page Blocked or Gated</AlertTitle>
+                <AlertDescription className="text-orange-400/80 text-sm mt-1">
+                  Marketplace page may be blocked or gated — the site returned a CAPTCHA, login prompt, or access-denied page. Extracted data may be incomplete.
+                </AlertDescription>
+              </Alert>
+            )}
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
 
               {/* Diagnostics Panel */}
@@ -294,11 +316,21 @@ export default function Home() {
                     <div>
                       <h4 className="text-xs text-muted-foreground mb-2 uppercase tracking-wider">Missing</h4>
                       <div className="flex flex-wrap gap-1.5">
-                        {result.extraction.fields_missing.map((f: string) => (
-                          <Badge key={f} variant="outline" className="bg-red-500/10 text-red-400 border-red-500/20 text-xs font-mono">
-                            {f}
-                          </Badge>
-                        ))}
+                        {result.extraction.fields_missing.map((f: string) => {
+                          const sev = FIELD_SEVERITY[f];
+                          return (
+                            <div key={f} className="flex items-center gap-1">
+                              <Badge variant="outline" className={`text-xs font-mono ${sev ? sev.className : "bg-muted/50 text-muted-foreground border-muted"}`}>
+                                {f}
+                              </Badge>
+                              {sev && sev.label !== "Standard" && (
+                                <span className={`text-[9px] font-bold uppercase tracking-wider ${sev.label === "Critical" ? "text-red-500" : "text-amber-500"}`}>
+                                  {sev.label}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
                         {result.extraction.fields_missing.length === 0 && (
                           <span className="text-xs text-muted-foreground">None</span>
                         )}
@@ -379,7 +411,9 @@ export default function Home() {
                           </span>
                         </div>
                       ) : (
-                        <span className="text-sm text-muted-foreground italic">No price</span>
+                        <Badge variant="outline" className="text-xs text-muted-foreground border-muted font-mono">
+                          price not found
+                        </Badge>
                       )}
                     </div>
                   </div>

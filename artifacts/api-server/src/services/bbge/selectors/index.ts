@@ -12,15 +12,17 @@ export type { SelectorExtractResult };
 export async function extractWithPlatformSelector(
   page: Page,
   platform: string,
+  html: string,
+  visibleText: string,
 ): Promise<SelectorExtractResult> {
   switch (platform) {
     case "ebay":
-      return extractEbay(page);
+      return extractEbay(page, html, visibleText);
     case "gumtree":
-      return extractGumtree(page);
+      return extractGumtree(page, html, visibleText);
     case "facebook":
-      return extractFacebook(page);
+      return extractFacebook(page, html, visibleText);
     default:
-      return extractGeneric(page);
+      return extractGeneric(page, html, visibleText);
   }
 }

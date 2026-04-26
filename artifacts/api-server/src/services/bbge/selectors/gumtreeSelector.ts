@@ -2,7 +2,7 @@
 
 import type { Page } from "playwright";
 import type { SelectorExtractResult } from "./types.js";
-import { trySelectors, tryAttrSelectors, cleanText } from "./types.js";
+import { trySelectors, tryAttrSelectors, cleanText, detectBlockedPage } from "./types.js";
 
 const PRICE_SELECTORS = [
   "[data-q='ad-price']",
@@ -26,18 +26,26 @@ const SELLER_SELECTORS = [
   "[class*='advertiser']",
 ];
 
-export async function extractGumtree(page: Page): Promise<SelectorExtractResult> {
+const LOCATION_SELECTORS = [
+  "[data-q='ad-location']",
+  "[class*='location']",
+  "[class*='Location']",
+];
+
+export async function extractGumtree(
+  page: Page,
+  _html: string,
+  visibleText: string,
+): Promise<SelectorExtractResult> {
   const debug: Record<string, string> = {};
 
+  let pageTitle: string | null = null;
+  try { pageTitle = await page.title(); } catch {}
+  const is_blocked = detectBlockedPage(visibleText, pageTitle);
+
   // Title
-  const titleEl = await trySelectors(page, [
-    "h1[class*='title']",
-    "h1[class*='Title']",
-    "[data-q='vip-title']",
-  ]);
-  const titleFallback = await tryAttrSelectors(page, [
-    { sel: "meta[property='og:title']", attr: "content" },
-  ]);
+  const titleEl = await trySelectors(page, ["h1[class*='title']", "h1[class*='Title']", "[data-q='vip-title']"]);
+  const titleFallback = await tryAttrSelectors(page, [{ sel: "meta[property='og:title']", attr: "content" }]);
   const title = cleanText(titleEl.value ?? titleFallback.value);
   if (titleEl.matched) debug["title"] = titleEl.matched;
   else if (titleFallback.matched) debug["title"] = titleFallback.matched;
@@ -56,6 +64,11 @@ export async function extractGumtree(page: Page): Promise<SelectorExtractResult>
   const sellerEl = await trySelectors(page, SELLER_SELECTORS);
   const seller_name = cleanText(sellerEl.value);
   if (sellerEl.matched) debug["seller_name"] = sellerEl.matched;
+
+  // Location
+  const locationEl = await trySelectors(page, LOCATION_SELECTORS);
+  const location = cleanText(locationEl.value);
+  if (locationEl.matched) debug["location"] = locationEl.matched;
 
   // Images
   let images: string[] = [];
@@ -78,5 +91,5 @@ export async function extractGumtree(page: Page): Promise<SelectorExtractResult>
     images = [];
   }
 
-  return { title, price, description, seller_name, images, selector_debug: debug };
+  return { title, price, description, seller_name, location, images, is_blocked, selector_debug: debug };
 }

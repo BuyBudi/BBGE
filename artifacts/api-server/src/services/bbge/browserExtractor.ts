@@ -20,6 +20,7 @@ export interface BrowserResult {
   price: string | null;
   description: string | null;
   seller_name: string | null;
+  location: string | null;
   visible_text: string | null;
   images: string[];
   screenshot_filename: string | null;
@@ -27,13 +28,12 @@ export interface BrowserResult {
   page_url: string | null;
   selector_debug: Record<string, string>;
   platform_selector_used: string;
+  is_blocked: boolean;
   error: string | null;
 }
 
 const DESKTOP_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-
-const MAX_IMAGES = 20;
 
 export async function extractWithBrowser(url: string, platform: string): Promise<BrowserResult> {
   const result: BrowserResult = {
@@ -41,6 +41,7 @@ export async function extractWithBrowser(url: string, platform: string): Promise
     price: null,
     description: null,
     seller_name: null,
+    location: null,
     visible_text: null,
     images: [],
     screenshot_filename: null,
@@ -48,6 +49,7 @@ export async function extractWithBrowser(url: string, platform: string): Promise
     page_url: null,
     selector_debug: {},
     platform_selector_used: platform === "generic" ? "generic" : platform,
+    is_blocked: false,
     error: null,
   };
 
@@ -101,7 +103,6 @@ export async function extractWithBrowser(url: string, platform: string): Promise
     } catch (gotoErr: unknown) {
       const gotoMsg = gotoErr instanceof Error ? gotoErr.message : String(gotoErr);
       logger.warn({ url, error: gotoMsg }, "Browser goto (domcontentloaded) failed — retrying with load");
-
       try {
         await page.goto(url, { waitUntil: "load", timeout: 30000 });
         gotoSucceeded = true;
@@ -111,39 +112,42 @@ export async function extractWithBrowser(url: string, platform: string): Promise
       }
     }
 
-    // Wait for JS rendering regardless of goto outcome
-    try {
-      await page.waitForTimeout(2500);
-    } catch {}
+    try { await page.waitForTimeout(2500); } catch {}
 
-    // Collect page_url and generic visible text BEFORE selector extraction
+    // Collect raw page data BEFORE selector extraction
     result.page_url = page.url();
+    try { result.title = await page.title(); } catch {}
 
+    let html = "";
     try {
-      result.title = await page.title();
-    } catch {}
-
-    try {
-      const html = await page.content();
+      html = await page.content();
       result.visible_text = html
         .replace(/<script[\s\S]*?<\/script>/gi, "")
         .replace(/<style[\s\S]*?<\/style>/gi, "")
         .replace(/<[^>]+>/g, " ")
         .replace(/\s+/g, " ")
         .trim()
-        .slice(0, 10000);
+        .slice(0, 15000);
     } catch {}
 
-    // Platform-aware structured extraction — run even if goto partially failed
+    // Platform-aware structured extraction — pass html and visibleText
     try {
-      const extracted = await extractWithPlatformSelector(page, platform);
-      // Override generic title if selector found a better one
+      const extracted = await extractWithPlatformSelector(
+        page,
+        platform,
+        html,
+        result.visible_text ?? "",
+      );
+
       if (extracted.title) result.title = extracted.title;
       result.price = extracted.price;
       result.description = extracted.description;
       result.seller_name = extracted.seller_name;
+      result.location = extracted.location;
+      result.is_blocked = extracted.is_blocked;
       result.selector_debug = extracted.selector_debug;
-      // Images: prefer platform-specific; fall back to generic scan
+
+      // Images: prefer platform-specific
       if (extracted.images.length > 0) {
         result.images = extracted.images;
       } else {
@@ -161,7 +165,7 @@ export async function extractWithBrowser(url: string, platform: string): Promise
                   !src.includes("pixel"),
               )
               .slice(0, max),
-          MAX_IMAGES,
+          20,
         );
       }
     } catch (selErr: unknown) {
@@ -169,7 +173,7 @@ export async function extractWithBrowser(url: string, platform: string): Promise
       logger.warn({ url, platform, error: selMsg }, "Platform selector extraction failed");
     }
 
-    // Screenshot — attempt even if goto had issues
+    // Screenshot
     try {
       const screenshotFilename = `${uuidv4()}.png`;
       const screenshotPath = path.join(SCREENSHOTS_DIR, screenshotFilename);
@@ -194,12 +198,8 @@ export async function extractWithBrowser(url: string, platform: string): Promise
       : "Rendered browser extraction unavailable.";
     logger.warn({ url, error: raw }, "Browser extraction failed");
   } finally {
-    try {
-      await context?.close();
-    } catch {}
-    try {
-      await browser?.close();
-    } catch {}
+    try { await context?.close(); } catch {}
+    try { await browser?.close(); } catch {}
   }
 
   return result;
