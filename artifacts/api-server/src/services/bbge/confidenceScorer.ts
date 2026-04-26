@@ -1,4 +1,11 @@
 // Confidence scoring model for BBGE extraction results
+//
+// Score bands (approximate):
+//   title only          → ≤ 25
+//   + price             → ≤ 55
+//   + price + images    → ≤ 70
+//   + desc + seller     → ≤ 90
+//   all fields present  → 100
 
 export interface ScoredResult {
   confidence_score: number;
@@ -7,15 +14,13 @@ export interface ScoredResult {
 }
 
 const FIELD_WEIGHTS: Record<string, number> = {
-  title: 20,
-  price: 20,
-  description: 20,
-  seller_name: 15,
+  title: 25,
+  price: 30,
+  images: 15,
+  description: 15,
+  seller_name: 10,
   location: 10,
-  images: 10,
 };
-
-const PLATFORM_BONUS = 5;
 
 export function scoreConfidence(
   data: {
@@ -26,34 +31,26 @@ export function scoreConfidence(
     location: string | null;
     images: string[];
   },
-  platformDetected: boolean
+  _platformDetected: boolean,
 ): ScoredResult {
-  const tracked = ["title", "price", "description", "seller_name", "location", "images"];
+  const tracked = ["title", "price", "images", "description", "seller_name", "location"];
   let score = 0;
   const fields_found: string[] = [];
   const fields_missing: string[] = [];
 
   for (const field of tracked) {
-    if (field === "images") {
-      if (data.images && data.images.length > 0) {
-        score += FIELD_WEIGHTS.images;
-        fields_found.push("images");
-      } else {
-        fields_missing.push("images");
-      }
-    } else {
-      const value = data[field as keyof typeof data];
-      if (value !== null && value !== undefined && String(value).trim() !== "") {
-        score += FIELD_WEIGHTS[field] ?? 0;
-        fields_found.push(field);
-      } else {
-        fields_missing.push(field);
-      }
-    }
-  }
+    const present =
+      field === "images"
+        ? data.images && data.images.length > 0
+        : data[field as keyof typeof data] !== null &&
+          String(data[field as keyof typeof data] ?? "").trim() !== "";
 
-  if (platformDetected) {
-    score += PLATFORM_BONUS;
+    if (present) {
+      score += FIELD_WEIGHTS[field] ?? 0;
+      fields_found.push(field);
+    } else {
+      fields_missing.push(field);
+    }
   }
 
   return {

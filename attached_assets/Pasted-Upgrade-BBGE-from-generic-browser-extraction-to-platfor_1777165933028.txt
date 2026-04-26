@@ -1,0 +1,149 @@
+Upgrade BBGE from generic browser extraction to platform-aware structured extraction.
+
+Current browser rendering works, but many key fields are missing.
+
+Create platform-specific selector modules for:
+- eBay
+- Gumtree
+- Facebook Marketplace
+- Generic fallback
+
+==================================================
+1. eBay Extractor
+==================================================
+
+When URL contains ebay:
+
+Try selectors in order for price:
+
+[itemprop='price']
+.x-price-primary
+.ux-textspans--BOLD
+[data-testid='x-price-primary']
+
+Try selectors for description:
+
+#viTabs_0_is
+.d-item-description
+[itemprop='description']
+
+Try seller:
+
+.seller-persona a
+.x-sellercard-atf__info__about-seller
+
+Try images:
+
+img[src*='i.ebayimg.com']
+
+==================================================
+2. Gumtree Extractor
+==================================================
+
+When URL contains gumtree:
+
+Price:
+[data-q='ad-price']
+[class*='price']
+
+Description:
+[class*='description']
+[data-q='vip-description']
+
+Seller:
+[class*='seller']
+[data-q='seller-name']
+
+Images:
+img[src]
+
+==================================================
+3. Facebook Marketplace Extractor
+==================================================
+
+When URL contains facebook.com/marketplace:
+
+Use visible text parsing from page.innerText.
+
+Detect price with regex:
+$123
+$1,250
+AUD 500
+
+Detect seller by nearby labels:
+Seller
+Joined
+Profile
+
+Collect visible images:
+img[src]
+
+Do not rely only on CSS selectors.
+
+==================================================
+4. Generic Fallback
+==================================================
+
+Use:
+meta[property='og:title']
+meta[property='og:description']
+meta[property='og:image']
+
+Then visible text regex.
+
+==================================================
+5. Improve Extraction Logic
+==================================================
+
+For every field:
+Try selector list in order.
+Use first valid result.
+
+Normalize:
+- trim spaces
+- remove duplicate text
+- remove currency symbols separately if needed
+
+==================================================
+6. Confidence Scoring Fix
+==================================================
+
+Current screen shows 95% confidence but only 25% extraction score.
+
+Fix logic:
+
+Overall confidence should equal field completeness + platform certainty.
+
+If only title found:
+confidence max 35.
+
+If title + price + images:
+70+
+
+If title + price + description + seller + location:
+90+
+
+==================================================
+7. Frontend Improvements
+==================================================
+
+Show:
+
+Platform: eBay
+Method: rendered_browser + platform_selector
+
+Show extracted price prominently.
+
+==================================================
+8. Debug Panel
+==================================================
+
+Optional hidden debug:
+show which selector matched each field.
+
+==================================================
+9. Keep browser lifecycle stable.
+Do not break existing Playwright fix.
+==================================================
+
+Restart app after changes.

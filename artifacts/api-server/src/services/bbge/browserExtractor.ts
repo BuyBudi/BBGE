@@ -1,10 +1,12 @@
 // Browser extractor: uses Playwright Chromium to render the page and extract content
+// Dispatches to platform-specific selectors for structured field extraction.
 
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "../../lib/logger.js";
+import { extractWithPlatformSelector } from "./selectors/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCREENSHOTS_DIR = path.resolve(__dirname, "../../storage/screenshots");
@@ -15,11 +17,16 @@ if (!fs.existsSync(SCREENSHOTS_DIR)) {
 
 export interface BrowserResult {
   title: string | null;
+  price: string | null;
+  description: string | null;
+  seller_name: string | null;
   visible_text: string | null;
   images: string[];
   screenshot_filename: string | null;
   screenshot_path: string | null;
   page_url: string | null;
+  selector_debug: Record<string, string>;
+  platform_selector_used: string;
   error: string | null;
 }
 
@@ -28,14 +35,19 @@ const DESKTOP_UA =
 
 const MAX_IMAGES = 20;
 
-export async function extractWithBrowser(url: string): Promise<BrowserResult> {
+export async function extractWithBrowser(url: string, platform: string): Promise<BrowserResult> {
   const result: BrowserResult = {
     title: null,
+    price: null,
+    description: null,
+    seller_name: null,
     visible_text: null,
     images: [],
     screenshot_filename: null,
     screenshot_path: null,
     page_url: null,
+    selector_debug: {},
+    platform_selector_used: platform === "generic" ? "generic" : platform,
     error: null,
   };
 
@@ -90,7 +102,6 @@ export async function extractWithBrowser(url: string): Promise<BrowserResult> {
       const gotoMsg = gotoErr instanceof Error ? gotoErr.message : String(gotoErr);
       logger.warn({ url, error: gotoMsg }, "Browser goto (domcontentloaded) failed — retrying with load");
 
-      // Retry with waitUntil: 'load'
       try {
         await page.goto(url, { waitUntil: "load", timeout: 30000 });
         gotoSucceeded = true;
@@ -100,25 +111,20 @@ export async function extractWithBrowser(url: string): Promise<BrowserResult> {
       }
     }
 
-    // Wait for JS rendering regardless of goto outcome (page may still have partial content)
+    // Wait for JS rendering regardless of goto outcome
     try {
       await page.waitForTimeout(2500);
-    } catch {
-      // ignore
-    }
+    } catch {}
 
-    // Collect all data BEFORE any close calls
+    // Collect page_url and generic visible text BEFORE selector extraction
     result.page_url = page.url();
 
     try {
       result.title = await page.title();
-    } catch {
-      result.title = null;
-    }
+    } catch {}
 
     try {
       const html = await page.content();
-      // Strip tags for visible text approximation
       result.visible_text = html
         .replace(/<script[\s\S]*?<\/script>/gi, "")
         .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -126,40 +132,51 @@ export async function extractWithBrowser(url: string): Promise<BrowserResult> {
         .replace(/\s+/g, " ")
         .trim()
         .slice(0, 10000);
-    } catch {
-      result.visible_text = null;
-    }
+    } catch {}
 
+    // Platform-aware structured extraction — run even if goto partially failed
     try {
-      result.images = await page.locator("img").evaluateAll(
-        (imgs, maxImages) =>
-          (imgs as HTMLImageElement[])
-            .map((img) => img.src || img.getAttribute("data-src") || "")
-            .filter(
-              (src) =>
-                src &&
-                src.startsWith("http") &&
-                !src.includes("data:") &&
-                !src.includes("icon") &&
-                !src.includes("logo") &&
-                !src.includes("pixel"),
-            )
-            .slice(0, maxImages),
-        MAX_IMAGES,
-      );
-    } catch {
-      result.images = [];
+      const extracted = await extractWithPlatformSelector(page, platform);
+      // Override generic title if selector found a better one
+      if (extracted.title) result.title = extracted.title;
+      result.price = extracted.price;
+      result.description = extracted.description;
+      result.seller_name = extracted.seller_name;
+      result.selector_debug = extracted.selector_debug;
+      // Images: prefer platform-specific; fall back to generic scan
+      if (extracted.images.length > 0) {
+        result.images = extracted.images;
+      } else {
+        result.images = await page.locator("img").evaluateAll(
+          (imgs, max) =>
+            (imgs as HTMLImageElement[])
+              .map((img) => img.src || img.getAttribute("data-src") || "")
+              .filter(
+                (src) =>
+                  src &&
+                  src.startsWith("http") &&
+                  !src.includes("data:") &&
+                  !src.includes("icon") &&
+                  !src.includes("logo") &&
+                  !src.includes("pixel"),
+              )
+              .slice(0, max),
+          MAX_IMAGES,
+        );
+      }
+    } catch (selErr: unknown) {
+      const selMsg = selErr instanceof Error ? selErr.message : String(selErr);
+      logger.warn({ url, platform, error: selMsg }, "Platform selector extraction failed");
     }
 
+    // Screenshot — attempt even if goto had issues
     try {
       const screenshotFilename = `${uuidv4()}.png`;
       const screenshotPath = path.join(SCREENSHOTS_DIR, screenshotFilename);
       await page.screenshot({ path: screenshotPath, type: "png", fullPage: false });
       result.screenshot_filename = screenshotFilename;
       result.screenshot_path = screenshotPath;
-    } catch {
-      // Screenshot failure is non-fatal
-    }
+    } catch {}
 
     if (!gotoSucceeded) {
       result.error = "Rendered browser extraction unavailable.";

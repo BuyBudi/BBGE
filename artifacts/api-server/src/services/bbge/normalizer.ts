@@ -25,10 +25,12 @@ export interface NormalizedListing {
   extraction: {
     confidence_score: number;
     method_used: string;
+    method_detail: string;
     methods_attempted: string[];
     fields_found: string[];
     fields_missing: string[];
     warnings: string[];
+    selector_debug: Record<string, string>;
   };
   evidence: {
     screenshot_url: string | null;
@@ -55,21 +57,32 @@ export function normalize(params: {
 }): NormalizedListing {
   const { url, platform, platform_confidence, methodsAttempted, metadata, browser, ai, screenshotUrl, warnings } = params;
 
-  // Merge fields from all sources: AI takes priority, then browser, then metadata
+  // Merge fields: AI takes priority, then browser (structured), then metadata
   const title =
     ai?.title ||
-    metadata?.title ||
     browser?.title ||
+    metadata?.title ||
     null;
 
-  const price = ai?.price || null;
+  // Price — AI first, then browser selector (new structured field)
+  const price =
+    ai?.price ||
+    browser?.price ||
+    null;
 
+  // Description — AI first, then browser selector, then metadata
   const description =
     ai?.description ||
+    browser?.description ||
     metadata?.description ||
     null;
 
-  const seller_name = ai?.seller_name || null;
+  // Seller — AI first, then browser selector
+  const seller_name =
+    ai?.seller_name ||
+    browser?.seller_name ||
+    null;
+
   const seller_profile_url = ai?.seller_profile_url || null;
   const location = ai?.location || null;
   const category = ai?.category || null;
@@ -77,7 +90,6 @@ export function normalize(params: {
   const listed_date_or_age = ai?.listed_date_or_age || null;
 
   const canonical_url =
-    ai?.seller_profile_url ||
     metadata?.canonical_url ||
     browser?.page_url ||
     null;
@@ -93,36 +105,45 @@ export function normalize(params: {
 
   // Determine primary method used
   let method_used = "none";
+  let method_detail = "none";
   if (ai && !ai.skipped && !ai.error) {
     method_used = "ai_vision";
+    method_detail = "ai_vision";
   } else if (browser && !browser.error) {
     method_used = "rendered_browser";
+    const selectorUsed = browser.platform_selector_used || "generic";
+    method_detail = `rendered_browser + ${selectorUsed}_selector`;
   } else if (metadata && !metadata.error) {
     method_used = "metadata";
+    method_detail = "metadata";
   }
 
   // Score confidence
   const scored = scoreConfidence(
     { title, price, description, seller_name, location, images },
-    platform !== "generic"
+    platform !== "generic",
   );
 
   // Collect warnings — pipeline warnings are already included; only add novel ones here
   const allWarnings = [...warnings];
-
   if (scored.confidence_score < 40) {
     allWarnings.push(
-      "Extraction confidence is low. In the next phase, BBGE will allow guided screenshot upload or mobile share-sheet capture to fill missing fields."
+      "Extraction confidence is low. In the next phase, BBGE will allow guided screenshot upload or mobile share-sheet capture to fill missing fields.",
     );
   }
 
-  // Deduplicate warnings (preserve order, remove exact duplicates)
+  // Deduplicate warnings (preserve order)
   const seen = new Set<string>();
   const dedupedWarnings = allWarnings.filter((w) => {
     if (seen.has(w)) return false;
     seen.add(w);
     return true;
   });
+
+  // Merge selector debug from browser
+  const selectorDebug: Record<string, string> = {
+    ...(browser?.selector_debug ?? {}),
+  };
 
   return {
     success: true,
@@ -144,10 +165,12 @@ export function normalize(params: {
     extraction: {
       confidence_score: scored.confidence_score,
       method_used,
+      method_detail,
       methods_attempted: methodsAttempted,
       fields_found: scored.fields_found,
       fields_missing: scored.fields_missing,
       warnings: dedupedWarnings,
+      selector_debug: selectorDebug,
     },
     evidence: {
       screenshot_url: screenshotUrl,

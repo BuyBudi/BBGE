@@ -18,14 +18,14 @@ function getScreenshotUrl(filename: string | null, baseUrl: string): string | nu
 
 export async function runExtractionPipeline(
   url: string,
-  requestBaseUrl: string
+  requestBaseUrl: string,
 ): Promise<NormalizedListing> {
   const detection = detectPlatform(url);
   const methodOrder = detection.platformConfig.methodOrder;
 
   logger.info(
     { url, platform: detection.platform, methods: methodOrder },
-    "Starting BBGE extraction pipeline"
+    "Starting BBGE extraction pipeline",
   );
 
   const methodsAttempted: string[] = [];
@@ -45,15 +45,15 @@ export async function runExtractionPipeline(
         warnings.push(metadataResult.error);
       }
     } else if (method === "rendered_browser") {
-      logger.info({ url, method }, "Running browser extraction");
-      browserResult = await extractWithBrowser(url);
+      logger.info({ url, method, platform: detection.platform }, "Running browser extraction");
+      // Pass detected platform so the extractor can use the right selector module
+      browserResult = await extractWithBrowser(url, detection.platform);
       if (browserResult.error) {
         warnings.push(browserResult.error);
       }
     } else if (method === "ai_vision") {
       if (!isOpenAiConfigured()) {
         logger.info({ method }, "AI vision skipped: OPENAI_API_KEY not configured");
-        // Replace the "ai_vision" we already pushed with "ai_vision_skipped"
         const idx = methodsAttempted.lastIndexOf("ai_vision");
         if (idx > -1) {
           methodsAttempted[idx] = "ai_vision_skipped";
@@ -71,7 +71,6 @@ export async function runExtractionPipeline(
         }
       }
     } else if (method === "ocr_pdf") {
-      // Phase 1 placeholder
       warnings.push("PDF/OCR fallback not implemented in Phase 1.");
     }
   }
@@ -96,9 +95,10 @@ export async function runExtractionPipeline(
       url,
       platform: detection.platform,
       method_used: normalized.extraction.method_used,
+      method_detail: normalized.extraction.method_detail,
       confidence: normalized.extraction.confidence_score,
     },
-    "BBGE extraction pipeline complete"
+    "BBGE extraction pipeline complete",
   );
 
   return normalized;
