@@ -1,0 +1,330 @@
+Build a new standalone app called BBGE — BuyBudi Generic Extractor.
+
+Purpose:
+BBGE is a universal marketplace listing extraction lab for P2P marketplaces that do not provide reliable API access. It must accept a listing URL, detect the marketplace platform, automatically choose the best available extraction method, extract structured listing data, and show both a human-readable preview and raw JSON output.
+
+Do not integrate this into the existing BuyBudi app yet. This must be a standalone proof-of-concept / lab app.
+
+TECH STACK
+Use:
+- React + Vite frontend
+- Node.js + Express backend
+- Playwright for rendered page acquisition
+- OpenAI Vision/Text extraction where OPENAI_API_KEY is available
+- A clean modular architecture so platform-specific extractors can be added later
+
+Before using OpenAI, check whether process.env.OPENAI_API_KEY exists.
+If it does not exist, the app must still run and should gracefully skip AI extraction with a clear UI warning:
+“OPENAI_API_KEY is not configured. AI vision extraction has been skipped.”
+
+CORE USER EXPERIENCE
+The UX must be extremely simple:
+1. User opens the BBGE web app.
+2. User pastes a marketplace listing URL.
+3. User clicks “Extract Listing”.
+4. App detects platform.
+5. App runs the best extraction pipeline for that platform.
+6. App displays:
+   - platform detected
+   - extraction methods attempted
+   - method that succeeded
+   - title
+   - price
+   - description
+   - seller name
+   - seller profile URL if available
+   - location if available
+   - images found
+   - confidence score
+   - missing fields
+   - evidence screenshot preview if available
+   - raw normalized JSON
+
+FIRST TARGET PLATFORMS
+Support platform detection for:
+- Facebook Marketplace
+- Gumtree
+- eBay
+- Craigslist
+- Generic fallback for all other P2P marketplace URLs
+
+Do not require platform-specific perfection yet. Build the framework so each platform can later be improved independently.
+
+EXTRACTION PIPELINE
+Create a cascading extraction pipeline.
+
+For every URL, attempt methods in this order unless a platform-specific config overrides it:
+
+1. Metadata extraction
+   - Fetch page HTML where possible.
+   - Extract:
+     - Open Graph title
+     - Open Graph description
+     - Open Graph image
+     - canonical URL
+     - page title
+     - JSON-LD structured data if present.
+
+2. Rendered browser extraction
+   - Use Playwright Chromium.
+   - Open the URL.
+   - Wait for network idle or reasonable timeout.
+   - Extract visible body text.
+   - Extract page title.
+   - Extract visible image URLs.
+   - Capture a screenshot.
+   - Return browser evidence.
+
+3. AI vision extraction
+   - Only run if OPENAI_API_KEY exists and a screenshot was captured.
+   - Send the screenshot and available visible text to OpenAI.
+   - Ask OpenAI to return structured JSON only.
+   - Extract:
+     - title
+     - price
+     - description
+     - seller_name
+     - seller_profile_url
+     - location
+     - category
+     - condition
+     - listed_date_or_age
+     - images_detected
+     - risk_relevant_observations
+   - The AI must not invent missing data. It must return null for unavailable fields.
+
+4. OCR/PDF fallback placeholder
+   - Include the architecture hook but do not implement heavy PDF/OCR yet.
+   - Return method status:
+     “PDF/OCR fallback not implemented in Phase 1.”
+
+5. User-assisted capture fallback
+   - If confidence is low, display:
+     “Extraction confidence is low. In the next phase, BBGE will allow guided screenshot upload or mobile share-sheet capture to fill missing fields.”
+   - Do not build screenshot upload yet unless simple to include.
+
+NORMALIZED OUTPUT SCHEMA
+Every extraction must return this exact shape:
+
+{
+  "success": true,
+  "platform": "",
+  "platform_confidence": 0,
+  "listing_url": "",
+  "canonical_url": "",
+  "title": null,
+  "price": null,
+  "description": null,
+  "seller_name": null,
+  "seller_profile_url": null,
+  "location": null,
+  "category": null,
+  "condition": null,
+  "listed_date_or_age": null,
+  "images": [],
+  "risk_relevant_observations": [],
+  "extraction": {
+    "confidence_score": 0,
+    "method_used": "",
+    "methods_attempted": [],
+    "fields_found": [],
+    "fields_missing": [],
+    "warnings": []
+  },
+  "evidence": {
+    "screenshot_url": null,
+    "html_excerpt": null,
+    "visible_text_excerpt": null
+  },
+  "raw": {
+    "metadata": {},
+    "browser": {},
+    "ai": {}
+  }
+}
+
+CONFIDENCE SCORING
+Implement a simple confidence model:
+- title found: +20
+- price found: +20
+- description found: +20
+- seller_name found: +15
+- location found: +10
+- at least one image found: +10
+- platform detected: +5
+
+Cap at 100.
+
+Fields missing should be calculated against:
+- title
+- price
+- description
+- seller_name
+- location
+- images
+
+PLATFORM-SPECIFIC METHOD PREFERENCE
+Create a platform configuration file.
+
+Initial method preferences:
+- eBay:
+  1. metadata
+  2. rendered_browser
+  3. ai_vision
+
+- Gumtree:
+  1. rendered_browser
+  2. metadata
+  3. ai_vision
+
+- Facebook Marketplace:
+  1. rendered_browser
+  2. ai_vision
+  3. metadata
+
+- Craigslist:
+  1. metadata
+  2. rendered_browser
+  3. ai_vision
+
+- Generic:
+  1. metadata
+  2. rendered_browser
+  3. ai_vision
+
+BACKEND FILE STRUCTURE
+Create a clean backend structure:
+
+server/
+  index.js
+  routes/
+    extract.js
+    health.js
+  services/
+    platformDetector.js
+    extractionPipeline.js
+    confidenceScorer.js
+    metadataExtractor.js
+    browserExtractor.js
+    aiVisionExtractor.js
+    normalizer.js
+  config/
+    platformConfigs.js
+  storage/
+    screenshots/
+
+FRONTEND FILE STRUCTURE
+Create:
+
+src/
+  App.jsx
+  main.jsx
+  styles.css
+  components/
+    UrlInputPanel.jsx
+    ExtractionSummary.jsx
+    ListingPreview.jsx
+    EvidencePanel.jsx
+    RawJsonPanel.jsx
+    MethodTimeline.jsx
+
+API ENDPOINTS
+Create:
+
+GET /health
+Returns:
+{
+  "ok": true,
+  "service": "BBGE",
+  "openaiConfigured": true/false
+}
+
+POST /api/extract
+Request:
+{
+  "url": "https://..."
+}
+
+Response:
+Normalized output schema above.
+
+FRONTEND DESIGN
+Use a polished but simple interface:
+- White background
+- Soft blue BuyBudi-style accents
+- Large title: “BBGE”
+- Subtitle: “BuyBudi Generic Extractor”
+- Short description:
+  “Paste a marketplace listing URL and BBGE will attempt to extract the listing data using the best available method for that platform.”
+- Input box
+- Primary button: “Extract Listing”
+- Loading state:
+  “Extracting listing data…”
+- Error state clearly shown
+- Results split into:
+  1. Extraction Summary
+  2. Listing Preview
+  3. Evidence
+  4. Raw JSON
+
+MOBILE RESPONSIVENESS
+The app must work cleanly on:
+- PC browser
+- Mac browser
+- iPhone browser
+- Android browser
+
+Use responsive layout and large touch-friendly controls.
+
+SECURITY / ROBUSTNESS
+- Validate URL before extraction.
+- Only allow http and https URLs.
+- Timeout browser extraction gracefully.
+- Never crash the server if a site blocks access.
+- Return warnings instead of hard failure where possible.
+- Do not store credentials.
+- Do not automate login.
+- Do not bypass authentication gates.
+- Do not attempt CAPTCHA solving.
+- Do not scrape behind login walls in Phase 1.
+- Do not persist user data except temporary screenshots for evidence.
+- Screenshots can be stored locally under server/storage/screenshots and served as static files.
+
+PACKAGE REQUIREMENTS
+Install required packages:
+- express
+- cors
+- playwright
+- openai
+- cheerio
+- uuid
+
+Make sure the Replit project can run with:
+npm install
+npx playwright install chromium
+npm run dev
+
+Use concurrently if needed to run backend and frontend together.
+
+SCRIPTS
+Update package.json scripts:
+- "dev": run both frontend and backend
+- "server": run Express server
+- "client": run Vite frontend
+
+PORTS
+- Frontend: 5000
+- Backend: 8081
+- Vite proxy /api to backend
+- Vite proxy /health to backend
+
+IMPLEMENTATION DETAIL
+Please create the full working application, not pseudocode.
+
+Add clear comments in the code.
+
+At the end, provide:
+1. Files created/modified
+2. How to run
+3. How to verify
+4. Any limitations of Phase 1

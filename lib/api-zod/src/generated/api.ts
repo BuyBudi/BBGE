@@ -14,3 +14,59 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * Returns BBGE health status and configuration
+ * @summary BBGE service health
+ */
+export const BbgeHealthResponse = zod.object({
+  ok: zod.boolean(),
+  service: zod.string(),
+  openaiConfigured: zod.boolean(),
+  playwrightAvailable: zod.boolean(),
+});
+
+/**
+ * Accepts a URL, detects the platform, and runs the best extraction pipeline
+ * @summary Extract listing data from a marketplace URL
+ */
+export const BbgeExtractBody = zod.object({
+  url: zod.string().describe("The marketplace listing URL to extract"),
+});
+
+export const BbgeExtractResponse = zod.object({
+  success: zod.boolean(),
+  platform: zod.string(),
+  platform_confidence: zod.number(),
+  listing_url: zod.string(),
+  canonical_url: zod.string().nullable(),
+  title: zod.string().nullable(),
+  price: zod.string().nullable(),
+  description: zod.string().nullable(),
+  seller_name: zod.string().nullable(),
+  seller_profile_url: zod.string().nullable(),
+  location: zod.string().nullable(),
+  category: zod.string().nullable(),
+  condition: zod.string().nullable(),
+  listed_date_or_age: zod.string().nullable(),
+  images: zod.array(zod.string()),
+  risk_relevant_observations: zod.array(zod.string()),
+  extraction: zod.object({
+    confidence_score: zod.number(),
+    method_used: zod.string(),
+    methods_attempted: zod.array(zod.string()),
+    fields_found: zod.array(zod.string()),
+    fields_missing: zod.array(zod.string()),
+    warnings: zod.array(zod.string()),
+  }),
+  evidence: zod.object({
+    screenshot_url: zod.string().nullable(),
+    html_excerpt: zod.string().nullable(),
+    visible_text_excerpt: zod.string().nullable(),
+  }),
+  raw: zod.object({
+    metadata: zod.object({}).passthrough(),
+    browser: zod.object({}).passthrough(),
+    ai: zod.object({}).passthrough(),
+  }),
+});

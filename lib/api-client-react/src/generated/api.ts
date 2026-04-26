@@ -5,18 +5,27 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
+  MutationFunction,
   QueryFunction,
   QueryKey,
+  UseMutationOptions,
+  UseMutationResult,
   UseQueryOptions,
   UseQueryResult,
 } from "@tanstack/react-query";
 
-import type { HealthStatus } from "./api.schemas";
+import type {
+  BbgeError,
+  BbgeExtractRequest,
+  BbgeExtractResult,
+  BbgeHealthStatus,
+  HealthStatus,
+} from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
-import type { ErrorType } from "../custom-fetch";
+import type { ErrorType, BodyType } from "../custom-fetch";
 
 type AwaitedInput<T> = PromiseLike<T> | T;
 
@@ -99,3 +108,166 @@ export function useHealthCheck<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * Returns BBGE health status and configuration
+ * @summary BBGE service health
+ */
+export const getBbgeHealthUrl = () => {
+  return `/api/bbge/health`;
+};
+
+export const bbgeHealth = async (
+  options?: RequestInit,
+): Promise<BbgeHealthStatus> => {
+  return customFetch<BbgeHealthStatus>(getBbgeHealthUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getBbgeHealthQueryKey = () => {
+  return [`/api/bbge/health`] as const;
+};
+
+export const getBbgeHealthQueryOptions = <
+  TData = Awaited<ReturnType<typeof bbgeHealth>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof bbgeHealth>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getBbgeHealthQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof bbgeHealth>>> = ({
+    signal,
+  }) => bbgeHealth({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof bbgeHealth>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type BbgeHealthQueryResult = NonNullable<
+  Awaited<ReturnType<typeof bbgeHealth>>
+>;
+export type BbgeHealthQueryError = ErrorType<unknown>;
+
+/**
+ * @summary BBGE service health
+ */
+
+export function useBbgeHealth<
+  TData = Awaited<ReturnType<typeof bbgeHealth>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof bbgeHealth>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getBbgeHealthQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Accepts a URL, detects the platform, and runs the best extraction pipeline
+ * @summary Extract listing data from a marketplace URL
+ */
+export const getBbgeExtractUrl = () => {
+  return `/api/bbge/extract`;
+};
+
+export const bbgeExtract = async (
+  bbgeExtractRequest: BbgeExtractRequest,
+  options?: RequestInit,
+): Promise<BbgeExtractResult> => {
+  return customFetch<BbgeExtractResult>(getBbgeExtractUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(bbgeExtractRequest),
+  });
+};
+
+export const getBbgeExtractMutationOptions = <
+  TError = ErrorType<BbgeError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof bbgeExtract>>,
+    TError,
+    { data: BodyType<BbgeExtractRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof bbgeExtract>>,
+  TError,
+  { data: BodyType<BbgeExtractRequest> },
+  TContext
+> => {
+  const mutationKey = ["bbgeExtract"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof bbgeExtract>>,
+    { data: BodyType<BbgeExtractRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return bbgeExtract(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type BbgeExtractMutationResult = NonNullable<
+  Awaited<ReturnType<typeof bbgeExtract>>
+>;
+export type BbgeExtractMutationBody = BodyType<BbgeExtractRequest>;
+export type BbgeExtractMutationError = ErrorType<BbgeError>;
+
+/**
+ * @summary Extract listing data from a marketplace URL
+ */
+export const useBbgeExtract = <
+  TError = ErrorType<BbgeError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof bbgeExtract>>,
+    TError,
+    { data: BodyType<BbgeExtractRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof bbgeExtract>>,
+  TError,
+  { data: BodyType<BbgeExtractRequest> },
+  TContext
+> => {
+  return useMutation(getBbgeExtractMutationOptions(options));
+};

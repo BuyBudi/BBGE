@@ -6,4 +6,14 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from "./bbgeError";
+export * from "./bbgeEvidence";
+export * from "./bbgeExtractionInfo";
+export * from "./bbgeExtractRequest";
+export * from "./bbgeExtractResult";
+export * from "./bbgeExtractResultRaw";
+export * from "./bbgeExtractResultRawAi";
+export * from "./bbgeExtractResultRawBrowser";
+export * from "./bbgeExtractResultRawMetadata";
+export * from "./bbgeHealthStatus";
 export * from "./healthStatus";

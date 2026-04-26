@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: bbge
+    description: BBGE extraction operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,50 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /bbge/health:
+    get:
+      operationId: bbgeHealth
+      tags: [bbge]
+      summary: BBGE service health
+      description: Returns BBGE health status and configuration
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BbgeHealthStatus"
+  /bbge/extract:
+    post:
+      operationId: bbgeExtract
+      tags: [bbge]
+      summary: Extract listing data from a marketplace URL
+      description: Accepts a URL, detects the platform, and runs the best extraction pipeline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BbgeExtractRequest"
+      responses:
+        "200":
+          description: Extraction result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BbgeExtractResult"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BbgeError"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BbgeError"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +79,153 @@ components:
           type: string
       required:
         - status
-
+    BbgeHealthStatus:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        service:
+          type: string
+        openaiConfigured:
+          type: boolean
+        playwrightAvailable:
+          type: boolean
+      required:
+        - ok
+        - service
+        - openaiConfigured
+        - playwrightAvailable
+    BbgeExtractRequest:
+      type: object
+      properties:
+        url:
+          type: string
+          description: The marketplace listing URL to extract
+      required:
+        - url
+    BbgeExtractionInfo:
+      type: object
+      properties:
+        confidence_score:
+          type: number
+        method_used:
+          type: string
+        methods_attempted:
+          type: array
+          items:
+            type: string
+        fields_found:
+          type: array
+          items:
+            type: string
+        fields_missing:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+      required:
+        - confidence_score
+        - method_used
+        - methods_attempted
+        - fields_found
+        - fields_missing
+        - warnings
+    BbgeEvidence:
+      type: object
+      properties:
+        screenshot_url:
+          type: ["string", "null"]
+        html_excerpt:
+          type: ["string", "null"]
+        visible_text_excerpt:
+          type: ["string", "null"]
+      required:
+        - screenshot_url
+        - html_excerpt
+        - visible_text_excerpt
+    BbgeExtractResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        platform:
+          type: string
+        platform_confidence:
+          type: number
+        listing_url:
+          type: string
+        canonical_url:
+          type: ["string", "null"]
+        title:
+          type: ["string", "null"]
+        price:
+          type: ["string", "null"]
+        description:
+          type: ["string", "null"]
+        seller_name:
+          type: ["string", "null"]
+        seller_profile_url:
+          type: ["string", "null"]
+        location:
+          type: ["string", "null"]
+        category:
+          type: ["string", "null"]
+        condition:
+          type: ["string", "null"]
+        listed_date_or_age:
+          type: ["string", "null"]
+        images:
+          type: array
+          items:
+            type: string
+        risk_relevant_observations:
+          type: array
+          items:
+            type: string
+        extraction:
+          $ref: "#/components/schemas/BbgeExtractionInfo"
+        evidence:
+          $ref: "#/components/schemas/BbgeEvidence"
+        raw:
+          type: object
+          properties:
+            metadata:
+              type: object
+            browser:
+              type: object
+            ai:
+              type: object
+          required:
+            - metadata
+            - browser
+            - ai
+      required:
+        - success
+        - platform
+        - platform_confidence
+        - listing_url
+        - canonical_url
+        - title
+        - price
+        - description
+        - seller_name
+        - seller_profile_url
+        - location
+        - category
+        - condition
+        - listed_date_or_age
+        - images
+        - risk_relevant_observations
+        - extraction
+        - evidence
+        - raw
+    BbgeError:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error

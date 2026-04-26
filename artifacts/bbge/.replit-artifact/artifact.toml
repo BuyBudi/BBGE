@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/bbge/"
+title = "BBGE — BuyBudi Generic Extractor"
+version = "1.0.0"
+id = "artifacts/bbge"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/bbge/" ]
+localPort = 3000
+
+[services.development]
+run = "pnpm --filter @workspace/bbge run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/bbge", "run", "build" ]
+publicDir = "artifacts/bbge/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "3000"
+BASE_PATH = "/bbge/"

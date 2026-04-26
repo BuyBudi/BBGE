@@ -25,3 +25,19 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 - `pnpm --filter @workspace/api-server run dev` — run API server locally
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
+
+## Artifacts
+
+### BBGE — BuyBudi Generic Extractor
+- **Frontend**: `artifacts/bbge` — React + Vite, Tailwind CSS, dark terminal theme
+- **Backend**: `artifacts/api-server/src/routes/bbge/` + `services/bbge/`
+- **Preview path**: `/bbge/`
+- **Purpose**: Extracts structured listing data from marketplace URLs (Facebook Marketplace, Gumtree, eBay, Craigslist, Generic)
+- **Pipeline**: metadata → Playwright browser → AI vision (requires OPENAI_API_KEY) → user-assisted fallback
+- **Key files**:
+  - `artifacts/bbge/src/pages/home.tsx` — main UI
+  - `artifacts/api-server/src/services/bbge/extractionPipeline.ts` — pipeline orchestrator
+  - `artifacts/api-server/src/services/bbge/platformDetector.ts` — URL-based platform detection
+  - `lib/api-spec/openapi.yaml` — OpenAPI spec (bbgeHealth + bbgeExtract endpoints)
+- **Installed packages** (api-server): `cheerio`, `playwright`, `openai`, `uuid`
+- **vite.config.ts**: PORT and BASE_PATH default to 3000 and /bbge/ if env vars not set

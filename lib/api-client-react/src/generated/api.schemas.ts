@@ -8,3 +8,81 @@
 export interface HealthStatus {
   status: string;
 }
+
+export interface BbgeHealthStatus {
+  ok: boolean;
+  service: string;
+  openaiConfigured: boolean;
+  playwrightAvailable: boolean;
+}
+
+export interface BbgeExtractRequest {
+  /** The marketplace listing URL to extract */
+  url: string;
+}
+
+export interface BbgeExtractionInfo {
+  confidence_score: number;
+  method_used: string;
+  methods_attempted: string[];
+  fields_found: string[];
+  fields_missing: string[];
+  warnings: string[];
+}
+
+export interface BbgeEvidence {
+  /** @nullable */
+  screenshot_url: string | null;
+  /** @nullable */
+  html_excerpt: string | null;
+  /** @nullable */
+  visible_text_excerpt: string | null;
+}
+
+export type BbgeExtractResultRawMetadata = { [key: string]: unknown };
+
+export type BbgeExtractResultRawBrowser = { [key: string]: unknown };
+
+export type BbgeExtractResultRawAi = { [key: string]: unknown };
+
+export type BbgeExtractResultRaw = {
+  metadata: BbgeExtractResultRawMetadata;
+  browser: BbgeExtractResultRawBrowser;
+  ai: BbgeExtractResultRawAi;
+};
+
+export interface BbgeExtractResult {
+  success: boolean;
+  platform: string;
+  platform_confidence: number;
+  listing_url: string;
+  /** @nullable */
+  canonical_url: string | null;
+  /** @nullable */
+  title: string | null;
+  /** @nullable */
+  price: string | null;
+  /** @nullable */
+  description: string | null;
+  /** @nullable */
+  seller_name: string | null;
+  /** @nullable */
+  seller_profile_url: string | null;
+  /** @nullable */
+  location: string | null;
+  /** @nullable */
+  category: string | null;
+  /** @nullable */
+  condition: string | null;
+  /** @nullable */
+  listed_date_or_age: string | null;
+  images: string[];
+  risk_relevant_observations: string[];
+  extraction: BbgeExtractionInfo;
+  evidence: BbgeEvidence;
+  raw: BbgeExtractResultRaw;
+}
+
+export interface BbgeError {
+  error: string;
+}
