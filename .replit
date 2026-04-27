@@ -45,3 +45,8 @@ externalPort = 3002
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+BBGE_BASE_URL = "http://localhost:8080"
