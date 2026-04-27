@@ -1,9 +1,10 @@
-// BBGE routes: /health and /extract
+// BBGE routes: /health, /extract, /assisted-facebook
 
 import { Router, type IRouter, type Request, type Response } from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { runExtractionPipeline } from "../../services/bbge/extractionPipeline.js";
+import { runAssistedFacebookExtraction } from "../../services/bbge/assistedFacebookExtractor.js";
 import { isOpenAiConfigured } from "../../services/bbge/aiVisionExtractor.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -65,6 +66,53 @@ router.post("/extract", async (req: Request, res: Response): Promise<void> => {
     const msg = err instanceof Error ? err.message : String(err);
     req.log.error({ url, error: msg }, "Extraction pipeline failed");
     res.status(500).json({ error: `Extraction failed: ${msg}` });
+  }
+});
+
+// POST /bbge/assisted-facebook
+// Accepts user-supplied text/screenshots when the FB login wall blocks direct extraction
+router.post("/assisted-facebook", async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as {
+    listingUrl?: string;
+    pastedText?: string;
+    sellerText?: string;
+    descriptionText?: string;
+    screenshots?: string[];
+  };
+
+  const hasContent = !!(
+    body.pastedText ||
+    body.sellerText ||
+    body.descriptionText ||
+    (Array.isArray(body.screenshots) && body.screenshots.length > 0)
+  );
+
+  if (!hasContent) {
+    res.status(400).json({
+      error:
+        "No content supplied. Provide pastedText, sellerText, descriptionText, or screenshots.",
+    });
+    return;
+  }
+
+  if (body.screenshots && !Array.isArray(body.screenshots)) {
+    res.status(400).json({ error: "screenshots must be an array of base64 strings" });
+    return;
+  }
+
+  try {
+    const result = await runAssistedFacebookExtraction({
+      listingUrl: body.listingUrl,
+      pastedText: body.pastedText,
+      sellerText: body.sellerText,
+      descriptionText: body.descriptionText,
+      screenshots: body.screenshots,
+    });
+    res.json(result);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    req.log.error({ error: msg }, "Assisted Facebook extraction failed");
+    res.status(500).json({ error: `Assisted extraction failed: ${msg}` });
   }
 });
 

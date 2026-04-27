@@ -7,6 +7,7 @@ import type { AiVisionResult } from "./aiVisionExtractor.js";
 
 export interface NormalizedListing {
   success: boolean;
+  status?: string;
   platform: string;
   platform_confidence: number;
   listing_url: string;
@@ -44,6 +45,7 @@ export interface NormalizedListing {
     metadata: Record<string, unknown>;
     browser: Record<string, unknown>;
     ai: Record<string, unknown>;
+    login_wall?: Record<string, unknown>;
   };
 }
 

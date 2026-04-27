@@ -1,0 +1,204 @@
+You are working on the BBGE / BuyBudi Generic Extractor prototype.
+
+PROBLEM:
+Facebook Marketplace URLs currently return low completeness because the extractor is being redirected to:
+
+https://www.facebook.com/login
+
+The system then treats the login page as a successful extraction and returns misleading partial evidence.
+
+OBJECTIVE:
+Fix Facebook Marketplace handling for prototype mode.
+
+Do not try to bypass Facebook login.
+Do not scrape behind authentication without user action.
+Do not pretend the extraction succeeded when the page is actually Facebook login.
+
+Implement a practical prototype fallback that allows the user to supply the loaded page content with minimal friction.
+
+====================================================
+REQUIRED CHANGES
+====================================================
+
+1. Detect Facebook login redirects correctly.
+
+If:
+- canonical_url contains /login
+- page title is only "Facebook"
+- extracted URL is facebook.com/login
+- visible text contains login/sign up wording
+- key listing fields are missing
+
+Then classify result as:
+
+status: "facebook_login_required"
+success: false
+ratingAllowed: false
+confidence_score: 0
+method: "facebook_login_wall_detected"
+
+Do not show 40% confidence.
+
+2. Update the frontend message.
+
+Instead of showing partial extraction, show:
+
+"Facebook Marketplace requires a logged-in session to view this listing. BBGE cannot retrieve the listing details from the public URL alone."
+
+Then show two prototype options:
+
+Option A:
+"Paste Listing Details"
+
+Option B:
+"Paste Page Text / HTML"
+
+3. Add a new prototype input mode:
+
+"Facebook Assisted Capture"
+
+This mode should allow the user to:
+
+- open the Facebook listing normally in their own browser or app
+- copy visible listing text
+- optionally paste page source / copied page text / selected text
+- optionally upload one or more screenshots
+- BBGE then uses AI to extract the listing fields from the supplied content
+
+4. Create a new tab or panel:
+
+Facebook Assisted Capture
+
+Fields:
+
+- Listing URL
+- Pasted page text
+- Optional pasted seller text
+- Optional pasted description
+- Optional uploaded screenshots/images
+- Analyse supplied content button
+
+5. Backend endpoint.
+
+Create or update an endpoint:
+
+POST /api/extract/assisted-facebook
+
+Payload:
+
+{
+  listingUrl,
+  pastedText,
+  sellerText,
+  descriptionText,
+  screenshots
+}
+
+It should use OpenAI vision/text extraction if available.
+
+Extract:
+
+- title
+- price
+- description
+- seller_name
+- seller_profile_signal
+- location
+- category
+- condition
+- listed_date_or_age
+- images
+- risk_relevant_observations
+
+6. Evidence scoring.
+
+For assisted Facebook capture:
+
+- title found = +15
+- price found = +15
+- description found = +20
+- seller info found = +15
+- location found = +10
+- image/screenshot provided = +15
+- listing URL present = +5
+- date/category/condition found = +5
+
+Return real confidence based on fields found.
+
+7. Do not issue reliable extraction unless enough evidence exists.
+
+Thresholds:
+
+0-39 = insufficient
+40-59 = limited prototype evidence
+60-79 = usable prototype evidence
+80-100 = strong prototype evidence
+
+8. Improve Raw JSON.
+
+When Facebook login is detected, include:
+
+{
+  "success": false,
+  "status": "facebook_login_required",
+  "reason": "Facebook redirected the extractor to the login page.",
+  "canonical_url": "https://www.facebook.com/login",
+  "next_step": "Use Facebook Assisted Capture or paste listing details manually."
+}
+
+9. UI behaviour.
+
+If status = facebook_login_required:
+
+- hide the normal extracted listing card or mark it clearly as blocked
+- do not show the generic Facebook title as the listing title
+- do not count Facebook logo/static images as listing images
+- show Assisted Capture CTA prominently
+
+10. Image filtering.
+
+Do not count these as product images:
+
+- Facebook logo
+- static.xx.fbcdn.net UI assets
+- icons
+- sprites
+- profile placeholder images
+- tiny images
+- login page graphics
+
+11. Testing.
+
+Test with this Facebook URL:
+
+https://www.facebook.com/marketplace/item/935449045765542/
+
+Expected:
+
+- system detects Facebook login redirect
+- no misleading 40% result
+- status = facebook_login_required
+- Assisted Capture option appears
+- user can paste copied listing text
+- AI extracts fields from supplied content
+- confidence improves only based on actual supplied evidence
+
+====================================================
+IMPORTANT
+====================================================
+
+This is a prototype.
+The correct prototype behaviour is not to defeat Facebook login.
+The correct behaviour is:
+- detect login wall
+- stop false extraction
+- guide the user to assisted capture
+- use OpenAI to extract fields from user-supplied content
+
+After implementation show me:
+
+- files modified
+- endpoint added
+- how to test login wall detection
+- how to test assisted Facebook capture
+- sample response JSON

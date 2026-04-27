@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -18,6 +18,12 @@ import {
   Bug,
   Tag,
   Cpu,
+  Lock,
+  FileText,
+  Upload,
+  MessageSquare,
+  X,
+  ChevronDown,
 } from "lucide-react";
 
 import { useBbgeHealth, useBbgeExtract, type BbgeExtractResult } from "@workspace/api-client-react";
@@ -30,6 +36,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
@@ -39,6 +46,7 @@ const formSchema = z.object({
 });
 
 type ExtractResult = BbgeExtractResult & {
+  status?: string;
   extraction: BbgeExtractResult["extraction"] & {
     method_detail?: string;
     selector_debug?: Record<string, string>;
@@ -47,6 +55,35 @@ type ExtractResult = BbgeExtractResult & {
     ai_recovery_used?: boolean;
   };
 };
+
+interface AssistedResult {
+  success: boolean;
+  status: string;
+  platform: string;
+  listing_url: string | null;
+  title: string | null;
+  price: string | null;
+  description: string | null;
+  seller_name: string | null;
+  seller_profile_signal: string | null;
+  location: string | null;
+  category: string | null;
+  condition: string | null;
+  listed_date_or_age: string | null;
+  images: string[];
+  risk_relevant_observations: string[];
+  extraction: {
+    confidence_score: number;
+    confidence_band: string;
+    method_used: string;
+    fields_found: string[];
+    fields_missing: string[];
+    warnings: string[];
+  };
+  error: string | null;
+}
+
+const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "").replace("/bbge", "") + "/api/bbge";
 
 const FIELD_SEVERITY: Record<string, { label: string; className: string }> = {
   price:       { label: "Critical", className: "bg-red-600/20 text-red-400 border-red-500/40" },
@@ -62,6 +99,20 @@ export default function Home() {
   const [result, setResult] = useState<ExtractResult | null>(null);
   const [showDebug, setShowDebug] = useState(false);
 
+  // Assisted capture state
+  const [showAssistedForm, setShowAssistedForm] = useState(false);
+  const [assistedResult, setAssistedResult] = useState<AssistedResult | null>(null);
+  const [isAssisting, setIsAssisting] = useState(false);
+  const [assistedListingUrl, setAssistedListingUrl] = useState("");
+  const [pastedText, setPastedText] = useState("");
+  const [sellerText, setSellerText] = useState("");
+  const [descriptionText, setDescriptionText] = useState("");
+  const [screenshots, setScreenshots] = useState<string[]>([]);
+  const [screenshotPreviews, setScreenshotPreviews] = useState<string[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const isLoginWall = result?.status === "facebook_login_required";
+
   const { data: healthData, isLoading: isLoadingHealth } = useBbgeHealth();
   const extractMutation = useBbgeExtract();
 
@@ -70,18 +121,95 @@ export default function Home() {
     defaultValues: { url: "" },
   });
 
+  const handleScreenshotUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    const newB64: string[] = [];
+    const newPreviews: string[] = [];
+    files.forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target?.result as string;
+        const base64 = dataUrl.split(",")[1];
+        newB64.push(base64);
+        newPreviews.push(dataUrl);
+        if (newB64.length === files.length) {
+          setScreenshots((prev) => [...prev, ...newB64]);
+          setScreenshotPreviews((prev) => [...prev, ...newPreviews]);
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const removeScreenshot = (idx: number) => {
+    setScreenshots((prev) => prev.filter((_, i) => i !== idx));
+    setScreenshotPreviews((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleAssistedSubmit = async () => {
+    const hasContent = !!(pastedText || sellerText || descriptionText || screenshots.length > 0);
+    if (!hasContent) {
+      toast({ title: "No content", description: "Please paste listing text or upload a screenshot.", variant: "destructive" });
+      return;
+    }
+    setIsAssisting(true);
+    setAssistedResult(null);
+    try {
+      const resp = await fetch(`${API_BASE}/assisted-facebook`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          listingUrl: assistedListingUrl || undefined,
+          pastedText: pastedText || undefined,
+          sellerText: sellerText || undefined,
+          descriptionText: descriptionText || undefined,
+          screenshots: screenshots.length > 0 ? screenshots : undefined,
+        }),
+      });
+      if (!resp.ok) {
+        const errBody = await resp.json().catch(() => ({})) as { error?: string };
+        throw new Error(errBody.error ?? `HTTP ${resp.status}`);
+      }
+      const data = await resp.json() as AssistedResult;
+      setAssistedResult(data);
+      toast({
+        title: data.success ? "Assisted Capture Complete" : "Insufficient Evidence",
+        description: data.success
+          ? `Extracted with ${Math.round(data.extraction.confidence_score)}% confidence.`
+          : "Not enough content to extract a useful listing. Try pasting more text.",
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      toast({ title: "Assisted Capture Failed", description: msg, variant: "destructive" });
+    } finally {
+      setIsAssisting(false);
+    }
+  };
+
   const onSubmit = (values: z.infer<typeof formSchema>) => {
     setResult(null);
     setShowDebug(false);
+    setAssistedResult(null);
+    setShowAssistedForm(false);
     extractMutation.mutate(
       { data: { url: values.url } },
       {
         onSuccess: (data) => {
-          setResult(data as ExtractResult);
-          toast({
-            title: "Extraction Complete",
-            description: `Successfully extracted data from ${data.platform}.`,
-          });
+          const r = data as ExtractResult;
+          setResult(r);
+          if (r.status === "facebook_login_required") {
+            setAssistedListingUrl(values.url);
+            toast({
+              title: "Facebook Login Wall Detected",
+              description: "Facebook requires login to view this listing. Use Assisted Capture to supply the listing details manually.",
+              variant: "destructive",
+            });
+          } else {
+            toast({
+              title: "Extraction Complete",
+              description: `Successfully extracted data from ${data.platform}.`,
+            });
+          }
         },
         onError: (error: any) => {
           toast({
@@ -243,8 +371,343 @@ export default function Home() {
           </Alert>
         )}
 
-        {/* Results */}
-        {result && (
+        {/* ───── Facebook Login Wall ───── */}
+        {result && isLoginWall && (
+          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <Card className="border-blue-500/30 bg-blue-500/5">
+              <CardContent className="pt-6 pb-6">
+                <div className="flex items-start gap-4">
+                  <div className="h-10 w-10 rounded-full bg-blue-500/10 border border-blue-500/30 flex items-center justify-center shrink-0">
+                    <Lock className="h-5 w-5 text-blue-400" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-semibold text-blue-300 text-base mb-1">Facebook Login Wall Detected</h3>
+                    <p className="text-sm text-muted-foreground leading-relaxed">
+                      Facebook redirected the extractor to its login page — your listing is private or requires an account to view.
+                      BBGE cannot bypass this. Instead, open the listing yourself and supply the content below.
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="border-blue-500/40 text-blue-300 hover:bg-blue-500/10 gap-2"
+                        onClick={() => setShowAssistedForm((v) => !v)}
+                      >
+                        <FileText className="h-4 w-4" />
+                        Paste Listing Details
+                        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showAssistedForm ? "rotate-180" : ""}`} />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-muted-foreground gap-2"
+                        onClick={() => {
+                          setShowAssistedForm(true);
+                          setTimeout(() => document.getElementById("assisted-pasted-text")?.focus(), 50);
+                        }}
+                      >
+                        <MessageSquare className="h-4 w-4" />
+                        Paste Page Text / HTML
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Assisted Capture Form */}
+            {showAssistedForm && (
+              <Card className="border-muted">
+                <CardHeader className="pb-3 border-b border-muted">
+                  <CardTitle className="text-sm font-semibold flex items-center gap-2 text-muted-foreground uppercase tracking-wider">
+                    <Upload className="h-4 w-4" />
+                    Facebook Assisted Capture
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="pt-5 space-y-5">
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Open the listing in your browser while logged in to Facebook, then copy and paste the details below.
+                    Optionally upload screenshots. The more content you provide, the higher the confidence score.
+                  </p>
+
+                  {/* Listing URL */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-muted-foreground uppercase tracking-wider font-medium">Listing URL</label>
+                    <Input
+                      value={assistedListingUrl}
+                      onChange={(e) => setAssistedListingUrl(e.target.value)}
+                      placeholder="https://www.facebook.com/marketplace/item/..."
+                      className="font-sans text-sm bg-input/50 border-muted"
+                    />
+                  </div>
+
+                  {/* Pasted text */}
+                  <div className="space-y-1.5">
+                    <label id="assisted-pasted-text" className="text-xs text-muted-foreground uppercase tracking-wider font-medium">
+                      Pasted Listing Text or Page Source
+                    </label>
+                    <Textarea
+                      value={pastedText}
+                      onChange={(e) => setPastedText(e.target.value)}
+                      placeholder="Paste the full text from the listing page here (Ctrl+A, Ctrl+C from the page, then paste). You can also paste raw HTML or page source."
+                      className="min-h-[120px] font-sans text-sm bg-input/50 border-muted resize-y"
+                    />
+                  </div>
+
+                  {/* Seller text */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-muted-foreground uppercase tracking-wider font-medium">
+                      Seller / Profile Info <span className="text-muted-foreground/50 normal-case tracking-normal">(optional)</span>
+                    </label>
+                    <Textarea
+                      value={sellerText}
+                      onChange={(e) => setSellerText(e.target.value)}
+                      placeholder="Paste the seller's name and any profile details visible on the listing."
+                      className="min-h-[64px] font-sans text-sm bg-input/50 border-muted resize-y"
+                    />
+                  </div>
+
+                  {/* Description text */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-muted-foreground uppercase tracking-wider font-medium">
+                      Item Description <span className="text-muted-foreground/50 normal-case tracking-normal">(optional)</span>
+                    </label>
+                    <Textarea
+                      value={descriptionText}
+                      onChange={(e) => setDescriptionText(e.target.value)}
+                      placeholder="Paste the item description text from the listing."
+                      className="min-h-[80px] font-sans text-sm bg-input/50 border-muted resize-y"
+                    />
+                  </div>
+
+                  {/* Screenshot upload */}
+                  <div className="space-y-2">
+                    <label className="text-xs text-muted-foreground uppercase tracking-wider font-medium">
+                      Screenshots <span className="text-muted-foreground/50 normal-case tracking-normal">(optional — improves AI extraction)</span>
+                    </label>
+                    <div
+                      className="border border-dashed border-muted rounded-md p-4 text-center cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-colors"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <Upload className="h-5 w-5 mx-auto text-muted-foreground mb-2" />
+                      <p className="text-xs text-muted-foreground">Click to upload screenshots (PNG, JPG)</p>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg"
+                        multiple
+                        className="hidden"
+                        onChange={handleScreenshotUpload}
+                      />
+                    </div>
+                    {screenshotPreviews.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        {screenshotPreviews.map((src, i) => (
+                          <div key={i} className="relative group h-16 w-16 rounded-md overflow-hidden border border-muted bg-muted/30">
+                            <img src={src} alt={`Screenshot ${i + 1}`} className="h-full w-full object-cover" />
+                            <button
+                              onClick={() => removeScreenshot(i)}
+                              className="absolute top-0.5 right-0.5 h-4 w-4 rounded-full bg-destructive/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <X className="h-2.5 w-2.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <Button
+                    onClick={handleAssistedSubmit}
+                    disabled={isAssisting}
+                    className="w-full font-semibold gap-2"
+                  >
+                    {isAssisting ? (
+                      <><Loader2 className="h-4 w-4 animate-spin" /> Analysing…</>
+                    ) : (
+                      <><SearchCode className="h-4 w-4" /> Analyse Listing</>
+                    )}
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Assisted Capture Results */}
+            {assistedResult && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                {!assistedResult.success && (
+                  <Alert className="bg-amber-500/10 border-amber-500/30 text-amber-400">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle>Insufficient Evidence</AlertTitle>
+                    <AlertDescription className="text-amber-400/80 text-sm mt-1">
+                      {assistedResult.extraction.warnings[0] ?? "Not enough content was supplied to extract a reliable listing. Add more text or screenshots."}
+                    </AlertDescription>
+                  </Alert>
+                )}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {/* Diagnostics */}
+                  <Card className="md:col-span-1 border-muted">
+                    <CardHeader className="pb-3 border-b border-muted">
+                      <CardTitle className="text-sm font-semibold flex items-center gap-2 text-muted-foreground uppercase tracking-wider">
+                        <Activity className="h-4 w-4" />
+                        Diagnostics
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="pt-4 space-y-5">
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-muted-foreground">Platform</span>
+                        <Badge variant="outline" className="bg-blue-500/10 text-blue-400 border-blue-500/30">Facebook Marketplace</Badge>
+                      </div>
+                      <div className="flex justify-between items-start text-sm gap-2">
+                        <span className="text-muted-foreground shrink-0">Method</span>
+                        <Badge variant="secondary" className="font-mono text-[10px]">{assistedResult.extraction.method_used}</Badge>
+                      </div>
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-muted-foreground shrink-0">Source</span>
+                        <Badge variant="outline" className="bg-violet-500/10 text-violet-400 border-violet-500/30 text-[10px] font-semibold">Assisted Capture</Badge>
+                      </div>
+                      <Separator className="bg-muted" />
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center text-sm mb-1">
+                          <span className="text-muted-foreground">Confidence</span>
+                          <span className={`font-bold text-base ${getConfidenceColor(assistedResult.extraction.confidence_score)}`}>
+                            {Math.round(assistedResult.extraction.confidence_score)}%
+                          </span>
+                        </div>
+                        <Progress value={assistedResult.extraction.confidence_score} className="h-2 bg-muted/50" />
+                        <p className="text-[10px] text-muted-foreground">
+                          Band: <span className="font-mono">{assistedResult.extraction.confidence_band}</span>
+                        </p>
+                      </div>
+                      <div className="space-y-3">
+                        <div>
+                          <h4 className="text-xs text-muted-foreground mb-2 uppercase tracking-wider">Found</h4>
+                          <div className="flex flex-wrap gap-1.5">
+                            {assistedResult.extraction.fields_found.map((f) => (
+                              <Badge key={f} variant="outline" className="bg-green-500/10 text-green-400 border-green-500/20 text-xs font-mono">{f}</Badge>
+                            ))}
+                            {assistedResult.extraction.fields_found.length === 0 && <span className="text-xs text-muted-foreground">None</span>}
+                          </div>
+                        </div>
+                        <div>
+                          <h4 className="text-xs text-muted-foreground mb-2 uppercase tracking-wider">Missing</h4>
+                          <div className="flex flex-wrap gap-1.5">
+                            {assistedResult.extraction.fields_missing.map((f) => {
+                              const sev = FIELD_SEVERITY[f];
+                              return (
+                                <div key={f} className="flex items-center gap-1">
+                                  <Badge variant="outline" className={`text-xs font-mono ${sev ? sev.className : "bg-muted/50 text-muted-foreground border-muted"}`}>{f}</Badge>
+                                  {sev && sev.label !== "Standard" && (
+                                    <span className={`text-[9px] font-bold uppercase tracking-wider ${sev.label === "Critical" ? "text-red-500" : "text-amber-500"}`}>{sev.label}</span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                            {assistedResult.extraction.fields_missing.length === 0 && <span className="text-xs text-muted-foreground">None</span>}
+                          </div>
+                        </div>
+                      </div>
+                      {assistedResult.extraction.warnings.length > 0 && (
+                        <div className="space-y-2 pt-1">
+                          {assistedResult.extraction.warnings.map((w, i) => (
+                            <div key={i} className="bg-amber-500/10 border border-amber-500/20 text-amber-500/90 text-xs p-2 rounded-md flex items-start gap-2">
+                              <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                              <span>{w}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                  {/* Listing Card */}
+                  <Card className="md:col-span-2 border-muted overflow-hidden flex flex-col">
+                    <CardHeader className="bg-muted/30 border-b border-muted pb-4">
+                      <div className="flex justify-between items-start gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xl font-sans font-semibold text-white leading-tight break-words">
+                            {assistedResult.title || <span className="text-muted-foreground italic font-normal">Untitled Listing</span>}
+                          </div>
+                          <div className="mt-2 flex items-center gap-3 flex-wrap">
+                            {assistedResult.listing_url && (
+                              <a href={assistedResult.listing_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors">
+                                <ExternalLink className="h-3.5 w-3.5" />View Original
+                              </a>
+                            )}
+                            <Badge variant="outline" className="text-[10px] bg-blue-500/10 text-blue-400 border-blue-500/30">Facebook Marketplace</Badge>
+                            <Badge variant="outline" className="text-[10px] bg-violet-500/10 text-violet-400 border-violet-500/30">Assisted Capture</Badge>
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          {assistedResult.price ? (
+                            <div className="flex items-center gap-1.5">
+                              <Tag className="h-4 w-4 text-primary" />
+                              <span className="text-2xl font-bold text-primary font-sans">{assistedResult.price}</span>
+                            </div>
+                          ) : (
+                            <Badge variant="outline" className="text-xs text-muted-foreground border-muted font-mono">price not found</Badge>
+                          )}
+                        </div>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="p-0 flex-1">
+                      <div className="grid grid-cols-2 divide-x divide-muted border-b border-muted">
+                        <div className="p-4 space-y-1">
+                          <span className="text-xs text-muted-foreground uppercase tracking-wider">Seller</span>
+                          <div className="font-medium text-sm">{assistedResult.seller_name || <span className="text-muted-foreground">Unknown</span>}</div>
+                        </div>
+                        <div className="p-4 space-y-1">
+                          <span className="text-xs text-muted-foreground uppercase tracking-wider">Location</span>
+                          <div className="font-medium text-sm">{assistedResult.location || <span className="text-muted-foreground">Not specified</span>}</div>
+                        </div>
+                        <div className="p-4 space-y-1 border-t border-muted">
+                          <span className="text-xs text-muted-foreground uppercase tracking-wider">Category</span>
+                          <div className="font-medium text-sm">{assistedResult.category || <span className="text-muted-foreground">Uncategorized</span>}</div>
+                        </div>
+                        <div className="p-4 space-y-1 border-t border-muted">
+                          <span className="text-xs text-muted-foreground uppercase tracking-wider">Condition</span>
+                          <div className="font-medium text-sm">{assistedResult.condition || <span className="text-muted-foreground">Not specified</span>}</div>
+                        </div>
+                      </div>
+                      {assistedResult.description && (
+                        <div className="p-5">
+                          <h4 className="text-xs text-muted-foreground mb-3 uppercase tracking-wider">Description</h4>
+                          <div className="bg-muted/20 border border-muted rounded-md p-4 max-h-[200px] overflow-y-auto">
+                            <p className="text-sm font-sans whitespace-pre-wrap text-foreground/80 leading-relaxed">{assistedResult.description}</p>
+                          </div>
+                        </div>
+                      )}
+                      {assistedResult.risk_relevant_observations.length > 0 && (
+                        <div className="px-5 pb-5">
+                          <h4 className="text-xs text-muted-foreground mb-3 uppercase tracking-wider flex items-center gap-2">
+                            Risk Observations
+                            <Badge variant="outline" className="bg-red-500/10 text-red-400 border-red-500/30 text-[10px]">{assistedResult.risk_relevant_observations.length}</Badge>
+                          </h4>
+                          <ul className="space-y-1.5">
+                            {assistedResult.risk_relevant_observations.map((obs, i) => (
+                              <li key={i} className="text-xs text-red-400/90 flex items-start gap-2 bg-red-500/5 border border-red-500/20 rounded px-3 py-2">
+                                <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                                {obs}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {/* Copy JSON */}
+                      <div className="px-5 pb-5">
+                        <Button variant="outline" size="sm" className="gap-2 font-mono text-xs" onClick={() => copyToClipboard(JSON.stringify(assistedResult, null, 2))}>
+                          <Clipboard className="h-3.5 w-3.5" />Copy JSON
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Normal Results */}
+        {result && !isLoginWall && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
 
             {/* Block / gate warning banner */}

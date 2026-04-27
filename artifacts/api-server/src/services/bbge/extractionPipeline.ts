@@ -5,6 +5,7 @@ import { extractMetadata } from "./metadataExtractor.js";
 import { extractWithBrowser } from "./browserExtractor.js";
 import { extractWithAiVision, isOpenAiConfigured } from "./aiVisionExtractor.js";
 import { runFacebookAiRecovery, type FbAiRecoveryResult } from "./facebookAiRecovery.js";
+import { detectFacebookLoginWall } from "./facebookLoginWall.js";
 import { normalize, type NormalizedListing } from "./normalizer.js";
 import { logger } from "../../lib/logger.js";
 import type { ExtractionMethod } from "../../config/bbge/platformConfigs.js";
@@ -15,6 +16,70 @@ function getScreenshotUrl(filename: string | null, baseUrl: string): string | nu
   if (!filename) return null;
   const base = SCREENSHOT_BASE_URL_ENV || baseUrl;
   return `${base}/api/bbge/screenshots/${filename}`;
+}
+
+/** Build a synthetic NormalizedListing for the Facebook login wall case */
+function buildLoginWallResponse(params: {
+  url: string;
+  platform: string;
+  platform_confidence: number;
+  pageUrl: string | null;
+  screenshotUrl: string | null;
+  loginSignals: string[];
+}): NormalizedListing {
+  const { url, platform, platform_confidence, pageUrl, screenshotUrl, loginSignals } = params;
+  return {
+    success: false,
+    platform,
+    platform_confidence,
+    listing_url: url,
+    canonical_url: pageUrl,
+    title: null,
+    price: null,
+    description: null,
+    seller_name: null,
+    seller_profile_url: null,
+    location: null,
+    category: null,
+    condition: null,
+    listed_date_or_age: null,
+    images: [],
+    risk_relevant_observations: [],
+    extraction: {
+      confidence_score: 0,
+      method_used: "facebook_login_wall_detected",
+      method_detail: "facebook_login_wall_detected",
+      methods_attempted: ["rendered_browser"],
+      fields_found: [],
+      fields_missing: ["title", "price", "description", "seller_name", "location", "images"],
+      warnings: [
+        "Facebook redirected the extractor to the login page.",
+        "Use Facebook Assisted Capture to supply listing content manually.",
+      ],
+      selector_debug: {},
+      field_sources: {},
+      is_blocked: true,
+      ai_recovery_used: false,
+    },
+    evidence: {
+      screenshot_url: screenshotUrl,
+      html_excerpt: null,
+      visible_text_excerpt: null,
+    },
+    raw: {
+      metadata: {},
+      browser: {},
+      ai: {},
+      login_wall: {
+        status: "facebook_login_required",
+        reason: "Facebook redirected the extractor to the login page.",
+        canonical_url: pageUrl ?? "https://www.facebook.com/login",
+        next_step: "Use Facebook Assisted Capture or paste listing details manually.",
+        signals: loginSignals,
+      },
+    },
+    status: "facebook_login_required",
+  };
 }
 
 export async function runExtractionPipeline(
@@ -53,6 +118,37 @@ export async function runExtractionPipeline(
         warnings.push(browserResult.error);
       }
 
+      // Facebook login wall detection
+      if (detection.platform === "facebook" && browserResult) {
+        const wallCheck = detectFacebookLoginWall({
+          pageUrl: browserResult.page_url ?? "",
+          pageTitle: browserResult.title,
+          visibleText: browserResult.visible_text ?? "",
+          price: browserResult.price,
+          seller_name: browserResult.seller_name,
+          title: browserResult.title,
+        });
+
+        if (wallCheck.detected) {
+          logger.warn(
+            { url, signals: wallCheck.signals },
+            "BBGE: Facebook login wall detected — returning login_required response",
+          );
+
+          const screenshotFilename = browserResult.screenshot_filename;
+          const screenshotUrl = getScreenshotUrl(screenshotFilename, requestBaseUrl);
+
+          return buildLoginWallResponse({
+            url,
+            platform: detection.platform,
+            platform_confidence: detection.confidence,
+            pageUrl: browserResult.page_url,
+            screenshotUrl,
+            loginSignals: wallCheck.signals,
+          });
+        }
+      }
+
       // Facebook AI recovery: targeted call to fill missing price/seller/location
       if (
         detection.platform === "facebook" &&
@@ -85,7 +181,6 @@ export async function runExtractionPipeline(
           if (fbAiRecovery.error) {
             logger.warn({ error: fbAiRecovery.error }, "Facebook AI recovery encountered an error");
           } else if (!fbAiRecovery.skipped) {
-            // Patch browser result with recovered fields (only where still missing)
             if (!browserResult.price && fbAiRecovery.price) {
               browserResult.price = fbAiRecovery.price;
               browserResult.selector_debug["price"] = "fb_ai_recovery";
@@ -128,7 +223,6 @@ export async function runExtractionPipeline(
   const screenshotFilename = browserResult?.screenshot_filename || null;
   const screenshotUrl = getScreenshotUrl(screenshotFilename, requestBaseUrl);
 
-  // Determine if AI recovery filled any fields
   const aiRecoveryUsed =
     fbAiRecovery !== null &&
     !fbAiRecovery.skipped &&
