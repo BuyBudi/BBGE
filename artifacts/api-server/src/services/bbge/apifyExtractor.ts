@@ -28,11 +28,10 @@ export interface ApifyExtractorResult {
 
 // Known Apify actors per platform.
 // eBay is intentionally absent — it already works via its own selectors.
-// gumtree_fallback is tried if the primary gumtree actor returns empty results.
+// Gumtree goes directly to memo23/gumtree-cheerio (crawlerbros always returns empty).
 export const PLATFORM_ACTORS: Record<string, string> = {
   facebook_marketplace: "apify/facebook-marketplace-scraper",
-  gumtree: "crawlerbros/gumtree-scraper",
-  gumtree_fallback: "memo23/gumtree-cheerio",
+  gumtree: "memo23/gumtree-cheerio",
   craigslist: "apify/craigslist-scraper",
 };
 
@@ -174,6 +173,8 @@ function normalizeFacebookMarketplaceItem(
 
   const listed_date = (item["timestamp"] as string) ?? null;
 
+  const uniqueImages = [...new Set(images)];
+
   return {
     title,
     price,
@@ -187,7 +188,7 @@ function normalizeFacebookMarketplaceItem(
     condition,
     category: null,
     listed_date,
-    images,
+    images: uniqueImages,
     attributes: {},
     raw: item,
   };
@@ -207,15 +208,10 @@ function normalizeGumtreeItem(
   const priceData = item["adPriceData"] as Record<string, unknown> | undefined;
   if (priceData) {
     if (typeof priceData["priceText"] === "string") {
-      price = priceData["priceText"];
-      const currency = priceData["currency"] as string | undefined;
-      if (currency && !price.includes(currency)) {
-        price = `${currency} ${price}`;
-      }
+      price = priceData["priceText"]; // use as-is: "$57,000" — already formatted
     } else if (typeof priceData["amount"] === "number" && (priceData["amount"] as number) > 0) {
-      const currency = (priceData["currency"] as string) ?? "AUD";
       const formatted = (priceData["amount"] as number).toLocaleString("en-AU");
-      price = `${currency} ${formatted}`;
+      price = `$${formatted}`; // e.g. "$57,000"
     }
   }
 
@@ -309,6 +305,8 @@ function normalizeGumtreeItem(
     }
   }
 
+  const uniqueImages = [...new Set(images)];
+
   return {
     title,
     price,
@@ -322,7 +320,7 @@ function normalizeGumtreeItem(
     condition,
     category,
     listed_date,
-    images,
+    images: uniqueImages,
     attributes,
     raw: item,
   };
@@ -348,9 +346,13 @@ function normalizeGenericItem(
   const listed_date = toStringOrNull(item.listedAt ?? item.postedAt ?? item.date);
 
   const rawImages = item.images ?? item.imageUrls ?? item.photos;
-  const images: string[] = Array.isArray(rawImages)
-    ? (rawImages as unknown[]).map((i) => String(i)).filter((s) => s.startsWith("http"))
-    : [];
+  const images: string[] = [
+    ...new Set(
+      Array.isArray(rawImages)
+        ? (rawImages as unknown[]).map((i) => String(i)).filter((s) => s.startsWith("http"))
+        : [],
+    ),
+  ];
 
   const rawAttrs = item.attributes ?? item.specs ?? item.details_table ?? {};
   const attributes: Record<string, string> =
@@ -394,7 +396,7 @@ async function runApifyActor(
 
   const run = await client.actor(actorId).call(
     buildActorInput(actorId, url),
-    { waitSecs: 90 },
+    { waitSecs: 60 },
   );
 
   if (!run || !run.defaultDatasetId) {
@@ -450,39 +452,6 @@ export async function extractWithApify(
     return skippedResult(`No Apify actor configured for platform: ${platform}`);
   }
 
-  // ── Gumtree: try primary actor, fall back to secondary if empty ─────────────
-  if (platform === "gumtree") {
-    let primaryResult: ApifyExtractorResult;
-    try {
-      primaryResult = await runApifyActor(actorId, url, platform);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ url, actorId, error: msg }, "Gumtree primary actor threw — trying fallback");
-      primaryResult = errorResult(actorId, msg);
-    }
-
-    const primaryOk =
-      !primaryResult.error &&
-      (primaryResult.title || primaryResult.price || primaryResult.images.length > 0);
-
-    if (primaryOk) return primaryResult;
-
-    const fallbackId = PLATFORM_ACTORS["gumtree_fallback"];
-    if (fallbackId) {
-      logger.info({ url, fallbackId }, "Gumtree primary returned empty — trying fallback actor");
-      try {
-        return await runApifyActor(fallbackId, url, platform);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.warn({ url, fallbackId, error: msg }, "Gumtree fallback actor also failed");
-        return errorResult(fallbackId, msg);
-      }
-    }
-
-    return primaryResult;
-  }
-
-  // ── All other platforms ─────────────────────────────────────────────────────
   try {
     return await runApifyActor(actorId, url, platform);
   } catch (err: unknown) {

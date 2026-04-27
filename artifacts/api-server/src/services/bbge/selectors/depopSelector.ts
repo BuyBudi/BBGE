@@ -47,7 +47,7 @@ export async function extractDepop(
     { sel: "meta[property='og:title']", attr: "content" },
     { sel: "meta[name='title']", attr: "content" },
   ]);
-  let title = cleanText(ogTitle.value);
+  let title = cleanText(ogTitle.value)?.replace(/\s*\|\s*Depop\s*$/i, "").trim() ?? null;
   if (ogTitle.matched && title) {
     debug["title"] = ogTitle.matched;
   } else if (!title) {

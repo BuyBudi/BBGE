@@ -1,0 +1,158 @@
+I have a working BBGE (BuyBudi Generic Extractor) TypeScript monorepo. 
+The app is functioning correctly — do NOT change any extraction logic, 
+normalizer field mappings, or platform-specific normaliser functions.
+
+The goal is targeted cleanup, efficiency improvements, and robustness only.
+Make all changes described below and nothing else.
+
+## CURRENT STATE (do not break these results)
+- Facebook Marketplace: 95% via apify/facebook-marketplace-scraper
+- Gumtree AU: 100% via memo23/gumtree-cheerio (fallback after crawlerbros fails)
+- Depop: 95% via rendered_browser
+- eBay: working via existing selectors
+
+## CLEANUP 1 — platformConfigs.ts: remove dead methods
+
+File: artifacts/api-server/src/config/bbge/platformConfigs.ts
+
+facebook_marketplace methodOrder: change ["apify", "metadata", "ai_vision"]
+to ["apify", "ai_vision"]
+Reason: metadata always returns the Facebook login page (canonical_url is
+facebook.com/login) — it adds latency and noise without contributing data.
+Keep ai_vision as fallback in case Apify is not configured.
+
+gumtree methodOrder: already correct ["apify", "rendered_browser"] — no change.
+
+craigslist methodOrder: change ["apify", "metadata", "rendered_browser"]
+to ["apify", "rendered_browser"]
+Reason: Craigslist also blocks server-side HTTP requests with 403.
+
+ebay methodOrder: change ["metadata", "rendered_browser", "ai_vision"]
+to ["metadata", "rendered_browser"]
+Reason: ai_vision is expensive and eBay already works well at high confidence
+via metadata + browser selectors. Only re-enable ai_vision if confidence drops.
+
+genericConfig methodOrder: change ["metadata", "rendered_browser", "ai_vision"]
+to ["metadata", "rendered_browser"]
+Same reason — don't spend OpenAI credits on generic fallback by default.
+
+## CLEANUP 2 — apifyExtractor.ts: skip crawlerbros for Gumtree
+
+File: artifacts/api-server/src/services/bbge/apifyExtractor.ts
+
+The crawlerbros/gumtree-scraper actor always fails (empty dataset) and wastes
+~10-15 seconds before falling through to memo23/gumtree-cheerio which succeeds.
+
+Change the PLATFORM_ACTORS map:
+  BEFORE:
+    gumtree: "crawlerbros/gumtree-scraper",
+    gumtree_fallback: "memo23/gumtree-cheerio",
+  
+  AFTER:
+    gumtree: "memo23/gumtree-cheerio",
+
+Remove the gumtree_fallback key entirely.
+
+Then in the extractWithApify function, remove the entire Gumtree 
+primary/fallback try-catch block and replace it with the standard 
+single-actor call path (same as all other platforms). The gumtree 
+platform no longer needs special fallback handling.
+
+The result is that Gumtree extractions will go directly to memo23/gumtree-cheerio
+without the wasted crawlerbros attempt, reducing latency by ~10-15 seconds.
+
+## CLEANUP 3 — apifyExtractor.ts: reduce Apify actor timeout
+
+In the runApifyActor function, the current call is:
+  client.actor(actorId).call(input, { waitSecs: 90 })
+
+Change waitSecs to 60. Apify actors that take longer than 60 seconds are
+either stuck or rate-limited. 60 seconds is sufficient for all current actors.
+
+## CLEANUP 4 — apifyExtractor.ts: deduplicate images
+
+In normalizeFacebookMarketplaceItem and normalizeGumtreeItem, after building
+the images array, deduplicate it before returning:
+
+  const uniqueImages = [...new Set(images)];
+
+Return uniqueImages instead of images. This prevents duplicate photo URLs
+appearing when both item["images"] and item["media"]["images"] contain the
+same entries (as seen in Gumtree raw data).
+
+Apply this deduplication to ALL three normaliser functions:
+normalizeFacebookMarketplaceItem, normalizeGumtreeItem, normalizeGenericItem.
+
+## CLEANUP 5 — apifyExtractor.ts: clean up Gumtree price formatting
+
+In normalizeGumtreeItem, the current price logic prepends "AUD" to the
+priceText resulting in "AUD $57,000" (redundant — AUD and $ both present).
+
+Change the price extraction to:
+  if (typeof priceData["priceText"] === "string") {
+    price = priceData["priceText"]; // use as-is: "$57,000"
+    // Do NOT prepend currency — priceText is already formatted
+  } else if (typeof priceData["amount"] === "number" && priceData["amount"] > 0) {
+    const formatted = (priceData["amount"] as number).toLocaleString("en-AU");
+    price = `$${formatted}`; // e.g. "$57,000"
+  }
+
+Remove the currency prepend logic entirely for Gumtree.
+
+## CLEANUP 6 — platformConfigs.ts: fix domain format
+
+The domain strings currently have markdown link formatting from copy-paste:
+  "[facebook.com](http://facebook.com)"
+  "[gumtree.com.au](http://gumtree.com.au)"
+  etc.
+
+These are incorrect — they should be plain strings. Fix ALL domains in the 
+file to be plain strings without markdown formatting:
+  "facebook.com" not "[facebook.com](http://facebook.com)"
+  "fb.com" not "[fb.com](http://fb.com)"
+  "m.facebook.com" not "[m.facebook.com](http://m.facebook.com)"
+  "gumtree.com.au" not "[gumtree.com.au](http://gumtree.com.au)"
+  "gumtree.com" not "[gumtree.com](http://gumtree.com)"
+  "depop.com" not "[depop.com](http://depop.com)"
+  "craigslist.org" not "[craigslist.org](http://craigslist.org)"
+  "ebay.com" not "[ebay.com](http://ebay.com)"
+  "ebay.co.uk" not "[ebay.co.uk](http://ebay.co.uk)"
+  "ebay.com.au" not "[ebay.com.au](http://ebay.com.au)"
+  "ebay.ca" not "[ebay.ca](http://ebay.ca)"
+  "ebay.de" not "[ebay.de](http://ebay.de)"
+  "ebay.fr" not "[ebay.fr](http://ebay.fr)"
+
+## CLEANUP 7 — Depop title cleanup
+
+Find where the Depop title is extracted (in the browser selector for depop
+or in the normalizer for depop). The title currently includes " | Depop" 
+appended by the og:title meta tag.
+
+After extracting the title for Depop, strip the suffix:
+  title = title?.replace(/\s*\|\s*Depop\s*$/i, "").trim() ?? null;
+
+Apply this only for the depop platform, not globally.
+
+## VERIFICATION
+
+After all changes:
+1. Run: pnpm typecheck --filter @workspace/api-server
+   Fix any type errors introduced. Do not suppress with any/as unknown.
+2. Run: pnpm build --filter @workspace/api-server
+3. Confirm the app starts successfully.
+4. Test these three URLs and confirm results match or exceed previous scores:
+   - https://www.facebook.com/marketplace/item/935449045765542/
+     Expected: 95%+, method: apify, title/price/description/images/location found
+   - https://www.gumtree.com.au/web/listing/cars-vans-utes/1337367984
+     Expected: 100%, method: apify, price shows "$57,000" not "AUD $57,000"
+   - https://www.depop.com/products/peachlimeeevival-vintage-y2k-guess-bag-8d53/
+     Expected: 95%+, title does NOT contain "| Depop"
+
+## CONSTRAINTS
+- Do not modify: browserExtractor.ts, normalizer.ts, extractionPipeline.ts,
+  facebookLoginWall.ts, facebookAiRecovery.ts, metadataExtractor.ts,
+  aiVisionExtractor.ts, or any route files
+- Do not add new dependencies
+- Do not restructure the normaliser functions — only the deduplication line
+- The apifyExtractor.ts file structure and all three normaliser functions
+  must remain intact — only make the specific targeted changes above
