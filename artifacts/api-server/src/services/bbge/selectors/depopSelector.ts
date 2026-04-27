@@ -25,7 +25,7 @@ function sellerFromVisibleText(text: string): string | null {
 
 /** Review count: "Active today ( 114 )" in visible text */
 function reviewCountFromVisibleText(text: string): string | null {
-  const m = text.match(/Active\s+(?:today|recently|\d+\s+\w+\s+ago)\s+\(\s*(\d+)\s*\)/i);
+  const m = text.match(/Active\s+(?:today|recently|\d+[^(]+)\s*\(\s*(\d+)\s*\)/i);
   return m ? m[1] : null;
 }
 
@@ -89,15 +89,31 @@ export async function extractDepop(
   if (ogDesc.matched && description) debug["description"] = ogDesc.matched;
 
   // ── Seller ─────────────────────────────────────────────────────────────────
-  let seller_name: string | null =
-    sellerFromDescription(description) ??
-    sellerFromVisibleText(visibleText);
+  let depopSellerName: string | null = null;
+
+  // Method 1: "Sold by @username" in og:description
+  depopSellerName = sellerFromDescription(description);
+
+  // Method 2: "username NNN sold · Active" in visible text
+  if (!depopSellerName) {
+    depopSellerName = sellerFromVisibleText(visibleText);
+  }
+
+  // Method 3: URL slug — /products/USERNAME-product-slug-HEXID/
+  if (!depopSellerName) {
+    try {
+      const pageUrl = page.url();
+      const urlMatch = pageUrl.match(/\/products\/([a-zA-Z0-9_]+)-/);
+      if (urlMatch?.[1]) {
+        depopSellerName = urlMatch[1];
+      }
+    } catch {}
+  }
+
+  const seller_name = depopSellerName;
 
   if (seller_name) {
-    debug["seller_name"] = seller_name.startsWith("@")
-      ? "og:description:sold_by"
-      : "visible_text:sold_pattern";
-
+    debug["seller_name"] = "depop:seller_extracted";
     // Store profile URL in selector_debug for transparency
     debug["seller_profile_url"] = `https://www.depop.com/${seller_name}/`;
   }

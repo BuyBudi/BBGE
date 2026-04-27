@@ -1,0 +1,86 @@
+In the BBGE app, find the file in artifacts/api-server/src/services/bbge/selectors/
+that handles Depop selectors, OR find where platform === "depop" is handled inside
+browserExtractor.ts. 
+
+Print the full contents of whichever file contains Depop-specific extraction logic
+before making any changes.
+
+Then make exactly these three changes:
+
+## CHANGE 1 — Filter Depop images
+
+Find where images are collected for Depop. The current code collects all og:image
+meta tag URLs. After collecting them, add this filter:
+
+  // For Depop, only keep real listing photos — exclude Depop UI/nav images
+  if (platform === "depop" || actorId === "depop") {
+    images = images.filter((url: string) => url.includes("media-photos.depop.com"));
+    // If filter removed everything, restore original array
+    if (images.length === 0) images = originalImages;
+  }
+
+Store the pre-filter array as originalImages before filtering.
+
+## CHANGE 2 — Extract seller_name for Depop
+
+Find where seller_name is extracted for Depop (likely returning null).
+Replace that null with this extraction logic:
+
+  let depopSellerName: string | null = null;
+
+  // Method 1: extract from og:description — "Sold by @username"
+  if (description) {
+    const soldByMatch = description.match(/Sold by @([a-zA-Z0-9_.]+)/i);
+    if (soldByMatch?.[1]) {
+      depopSellerName = soldByMatch[1];
+    }
+  }
+
+  // Method 2: extract from visible_text — "username NNN sold · Active"
+  if (!depopSellerName && visibleText) {
+    const activeMatch = visibleText.match(/([a-zA-Z0-9_.]+)\s+\d+\s+sold\s+[·•]\s+Active/i);
+    if (activeMatch?.[1]) {
+      depopSellerName = activeMatch[1];
+    }
+  }
+
+  // Method 3: extract from URL — /products/USERNAME-product-slug-HEXID/
+  if (!depopSellerName && pageUrl) {
+    const urlMatch = pageUrl.match(/\/products\/([a-zA-Z0-9_]+)-/);
+    if (urlMatch?.[1]) {
+      depopSellerName = urlMatch[1];
+    }
+  }
+
+  seller_name = depopSellerName;
+  
+  // Construct profile URL if we found a seller name
+  if (depopSellerName) {
+    seller_profile_url = `https://www.depop.com/${depopSellerName}/`;
+  }
+
+The variables description, visibleText, pageUrl should already be available
+in the extraction context. Use whatever variable names are actually in scope.
+
+## CHANGE 3 — Extract review count for Depop
+
+After extracting seller_name, also extract review count from visible_text:
+
+  // Extract review count — appears as "Active today ( 114 )" or "Active recently ( 5 )"
+  if (visibleText) {
+    const reviewMatch = visibleText.match(/Active\s+(?:today|recently|\d+[^(]+)\s*\(\s*(\d+)\s*\)/i);
+    if (reviewMatch?.[1]) {
+      // Store in selector_debug for now — normalizer will pick it up
+      if (selectorDebug) selectorDebug["seller_review_count"] = reviewMatch[1];
+    }
+  }
+
+## IMPORTANT
+
+Before making changes, READ the file first and show me its contents.
+Then make ONLY these three targeted changes — do not refactor or restructure.
+Use the exact variable names that exist in the file.
+Rebuild: pnpm build --filter @workspace/api-server
+Test: https://www.depop.com/products/peachlimeeevival-vintage-y2k-guess-bag-8d53/
+Expected result: seller_name = "peachlimerevival", images reduced to only
+media-photos.depop.com URLs
