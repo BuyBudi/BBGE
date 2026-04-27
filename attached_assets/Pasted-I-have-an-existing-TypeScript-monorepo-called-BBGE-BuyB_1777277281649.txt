@@ -1,0 +1,257 @@
+I have an existing TypeScript monorepo called BBGE (BuyBudi Generic Extractor). 
+Do NOT restructure the project, rename files, or change existing logic. Only ADD 
+new files and make the minimal targeted edits described below.
+
+## WHAT BBGE DOES TODAY
+
+The extraction pipeline in artifacts/api-server/src/services/bbge/extractionPipeline.ts
+orchestrates multiple extraction strategies in sequence: metadata → rendered_browser → 
+ai_vision. Platform detection lives in platformDetector.ts and reads from 
+config/bbge/platformConfigs.ts. All results are normalised into a NormalizedListing 
+in normalizer.ts before returning.
+
+The existing pipeline works well for eBay. Facebook Marketplace hits a login wall 
+and falls back to AI vision with poor results. Gumtree, Depop, and Craigslist use 
+the generic browser extractor with inconsistent results.
+
+## WHAT TO ADD: APIFY AS A PIPELINE STRATEGY
+
+Add Apify as a new extraction method called "apify" that slots into the existing 
+pipeline alongside metadata, rendered_browser, and ai_vision. It should be tried 
+BEFORE rendered_browser for platforms that have a known Apify actor, and used as 
+a fallback AFTER rendered_browser for generic/unknown platforms.
+
+---
+
+## STEP 1 — Install dependency
+
+Add the apify-client package to artifacts/api-server/package.json dependencies:
+"apify-client": "^2.9.4"
+
+Run: pnpm install --filter @workspace/api-server
+
+---
+
+## STEP 2 — New file: artifacts/api-server/src/services/bbge/apifyExtractor.ts
+
+Create this file from scratch. It must:
+
+- Import ApifyClient from "apify-client"
+- Read APIFY_API_TOKEN from process.env — if missing, all functions return early 
+  with a skipped:true result rather than throwing
+- Export a function: isApifyConfigured(): boolean
+- Export an interface ApifyExtractorResult with these fields (all nullable):
+    title: string | null
+    price: string | null
+    description: string | null
+    seller_name: string | null
+    seller_profile_url: string | null
+    seller_member_since: string | null
+    seller_review_count: number | null
+    seller_rating: number | null
+    location: string | null
+    condition: string | null
+    category: string | null
+    listed_date: string | null
+    images: string[]
+    attributes: Record<string, string>
+    raw: Record<string, unknown>
+    skipped: boolean
+    error: string | null
+    actor_used: string | null
+
+- Export a map PLATFORM_ACTORS: Record<string, string> mapping platform names to 
+  Apify actor IDs:
+    facebook: "apify/facebook-marketplace-scraper"
+    gumtree: "epctex/gumtree-scraper"
+    depop: "barnett/depop-scraper"
+    craigslist: "apify/craigslist-scraper"
+  Do NOT include ebay here — eBay already works via its own API.
+
+- Export the main function: 
+  extractWithApify(url: string, platform: string): Promise<ApifyExtractorResult>
+
+  This function must:
+  1. Check isApifyConfigured() — return skipped:true result if not
+  2. Look up actor ID from PLATFORM_ACTORS using platform name — if not found, 
+     return skipped:true (do not use a generic fallback actor, only run for known platforms)
+  3. Initialise ApifyClient with the token
+  4. Call client.actor(actorId).call() with input: { startUrls: [{ url }], maxItems: 1 }
+     and a 90 second timeout
+  5. Fetch the dataset items from the completed run
+  6. Take the first item and normalise it into ApifyExtractorResult using defensive 
+     optional chaining — every field must fall back to null rather than throw
+  7. The normalisation must handle field name variations across actors. Try these 
+     fallback chains for each field:
+       title: item.title ?? item.name ?? item.heading ?? null
+       price: item.price ?? item.priceText ?? item.price_text ?? null
+       description: item.description ?? item.body ?? item.details ?? null
+       seller_name: item.sellerName ?? item.seller?.name ?? item.seller_name ?? null
+       seller_profile_url: item.sellerUrl ?? item.seller?.profileUrl ?? null
+       seller_member_since: item.memberSince ?? item.seller?.memberSince ?? null
+       seller_review_count: item.reviewCount ?? item.seller?.reviewCount ?? null
+       seller_rating: item.rating ?? item.seller?.rating ?? null
+       location: item.location ?? item.locationText ?? item.city ?? null
+       condition: item.condition ?? item.itemCondition ?? null
+       category: item.category ?? item.breadcrumb ?? null
+       listed_date: item.listedAt ?? item.postedAt ?? item.date ?? null
+       images: item.images ?? item.imageUrls ?? item.photos ?? []
+       attributes: item.attributes ?? item.specs ?? item.details_table ?? {}
+  8. Return the normalised result with actor_used set to the actor ID, error: null
+  9. Wrap everything in try/catch — on error return a result with error set to the 
+     error message and all other fields null
+
+---
+
+## STEP 3 — Edit platformConfigs.ts
+
+In artifacts/api-server/src/config/bbge/platformConfigs.ts:
+
+1. Add "apify" to the ExtractionMethod type union (wherever that type is defined)
+
+2. For the facebook platform config, change methodOrder to:
+   ["apify", "metadata", "ai_vision"]
+   (Remove rendered_browser for facebook — Apify replaces it as it handles login)
+
+3. For the gumtree platform config (if it exists), change methodOrder to:
+   ["apify", "metadata", "rendered_browser"]
+
+4. For the depop platform config (if it exists), change methodOrder to:
+   ["apify", "metadata", "rendered_browser"]
+
+5. For the craigslist platform config (if it exists), change methodOrder to:
+   ["apify", "metadata", "rendered_browser"]
+
+6. If gumtree, depop, or craigslist configs do not already exist in platformConfigs,
+   ADD them now with these domains and the methodOrder above:
+     gumtree: domains ["gumtree.com.au", "gumtree.com"], confidence: 0.95
+     depop: domains ["depop.com"], confidence: 0.95
+     craigslist: domains ["craigslist.org"], confidence: 0.95
+
+---
+
+## STEP 4 — Edit extractionPipeline.ts
+
+In artifacts/api-server/src/services/bbge/extractionPipeline.ts make only these 
+targeted changes:
+
+1. Add this import at the top (after existing imports):
+   import { extractWithApify, isApifyConfigured, type ApifyExtractorResult } 
+     from "./apifyExtractor.js";
+
+2. Inside runExtractionPipeline, add a new variable alongside the existing ones:
+   let apifyResult: ApifyExtractorResult | null = null;
+
+3. Inside the for loop that iterates over methodOrder, add a new else-if branch 
+   for method === "apify", positioned BEFORE the rendered_browser branch:
+
+   } else if (method === "apify") {
+     if (!isApifyConfigured()) {
+       logger.info({ method }, "Apify skipped: APIFY_API_TOKEN not configured");
+       const idx = methodsAttempted.lastIndexOf("apify");
+       if (idx > -1) methodsAttempted[idx] = "apify_skipped";
+       warnings.push("APIFY_API_TOKEN is not configured. Apify extraction skipped.");
+     } else {
+       logger.info({ url, method, platform: detection.platform }, "Running Apify extraction");
+       apifyResult = await extractWithApify(url, detection.platform);
+       if (apifyResult.error) {
+         warnings.push(`Apify extraction error: ${apifyResult.error}`);
+       } else if (!apifyResult.skipped && apifyResult.title) {
+         // Apify succeeded with meaningful data — skip remaining methods
+         logger.info({ url, actor: apifyResult.actor_used }, "Apify extraction succeeded, skipping remaining methods");
+         break;
+       }
+     }
+   }
+
+4. Pass apifyResult into the normalize() call at the bottom alongside the existing 
+   arguments:
+   apify: apifyResult,
+
+---
+
+## STEP 5 — Edit normalizer.ts
+
+In artifacts/api-server/src/services/bbge/normalizer.ts make only these targeted 
+changes:
+
+1. Add ApifyExtractorResult to the import from apifyExtractor.js
+
+2. Add apify?: ApifyExtractorResult | null to the NormalizeInput interface 
+   (or equivalent params object)
+
+3. In the normalize function body, add apify data as a source layer. Apify fields 
+   should be treated as HIGHER priority than browser results but LOWER priority 
+   than existing high-confidence selector matches. Apply it using this pattern — 
+   add it into each field's existing fallback chain:
+
+   For title:      existing_logic ?? apify?.title ?? null
+   For price:      existing_logic ?? apify?.price ?? null
+   For description: existing_logic ?? apify?.description ?? null
+   For seller_name: existing_logic ?? apify?.seller_name ?? null
+   For seller_profile_url: existing_logic ?? apify?.seller_profile_url ?? null
+   For location:   existing_logic ?? apify?.location ?? null
+   For condition:  existing_logic ?? apify?.condition ?? null
+   For category:   existing_logic ?? apify?.category ?? null
+   For images:     if existing images array is empty, use apify?.images ?? []
+   
+   Also add these new fields to NormalizedListing if not already present:
+     seller_member_since: string | null
+     seller_review_count: number | null  
+     seller_rating: number | null
+   Populate them from apify?.seller_member_since etc., falling back to null
+
+4. In the extraction metadata section of the normalized output, update method_used 
+   logic: if apify result exists and was not skipped and title is present, set 
+   method_used to "apify" and method_detail to the actor_used value from apifyResult
+
+5. Add apify: apifyResult ?? {} to the raw section of the output
+
+---
+
+## STEP 6 — Add APIFY_API_TOKEN to environment
+
+In the Replit Secrets panel, add:
+  APIFY_API_TOKEN = (user to fill in from https://console.apify.com/account/integrations)
+
+Add to artifacts/api-server (if an .env.example exists there):
+  APIFY_API_TOKEN=your_apify_token_here
+
+---
+
+## STEP 7 — Update the frontend to show new seller fields
+
+In artifacts/bbge/src — find the component that renders seller information in the 
+results UI (likely in a file named something like ExtractionResult, ListingResult, 
+SellerCard, or similar — search for where seller_name is rendered).
+
+Add display of these new fields if they are present in the API response:
+  - seller_member_since → label "Member Since"
+  - seller_review_count → label "Reviews"  
+  - seller_rating → label "Rating" (show as X/5 or X stars if numeric)
+
+Only show these fields if they are non-null. Match the existing visual style of 
+the seller section exactly.
+
+---
+
+## CONSTRAINTS — DO NOT:
+- Do not modify browserExtractor.ts, aiVisionExtractor.ts, facebookAiRecovery.ts, 
+  facebookLoginWall.ts, or metadataExtractor.ts
+- Do not change any existing route files or the routes/index.ts
+- Do not change the NormalizedListing fields that already exist, only add new ones
+- Do not remove the Facebook login wall detection logic — it still runs as a safety 
+  check even though Apify is now tried first for Facebook
+- Do not change the eBay flow — it already works via its own API
+- Do not add any new API routes — Apify runs inside the existing extraction pipeline 
+  called by the existing /api/bbge route
+
+---
+
+## VERIFICATION
+
+After making all changes, verify:
+1. pnpm typecheck passes with no new errors in api-server
+2. The app builds successfully with pnpm build in artifacts/api-server
+3. A test extraction of a Facebook Marketplace URL routes through Apify first
+4. If APIFY_API_TOKEN is not set, the pipeline degrades gracefully to the next method

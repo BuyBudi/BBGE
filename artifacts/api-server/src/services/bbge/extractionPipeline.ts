@@ -6,6 +6,7 @@ import { extractWithBrowser } from "./browserExtractor.js";
 import { extractWithAiVision, isOpenAiConfigured } from "./aiVisionExtractor.js";
 import { runFacebookAiRecovery, type FbAiRecoveryResult } from "./facebookAiRecovery.js";
 import { detectFacebookLoginWall } from "./facebookLoginWall.js";
+import { extractWithApify, isApifyConfigured, type ApifyExtractorResult } from "./apifyExtractor.js";
 import { normalize, type NormalizedListing } from "./normalizer.js";
 import { logger } from "../../lib/logger.js";
 import type { ExtractionMethod } from "../../config/bbge/platformConfigs.js";
@@ -100,12 +101,33 @@ export async function runExtractionPipeline(
   let metadataResult = null;
   let browserResult = null;
   let aiResult = null;
+  let apifyResult: ApifyExtractorResult | null = null;
   let fbAiRecovery: FbAiRecoveryResult | null = null;
 
   for (const method of methodOrder as ExtractionMethod[]) {
     methodsAttempted.push(method);
 
-    if (method === "metadata") {
+    if (method === "apify") {
+      if (!isApifyConfigured()) {
+        logger.info({ method }, "Apify skipped: APIFY_API_TOKEN not configured");
+        const idx = methodsAttempted.lastIndexOf("apify");
+        if (idx > -1) methodsAttempted[idx] = "apify_skipped";
+        warnings.push("APIFY_API_TOKEN is not configured. Apify extraction skipped.");
+      } else {
+        logger.info({ url, method, platform: detection.platform }, "Running Apify extraction");
+        apifyResult = await extractWithApify(url, detection.platform);
+        if (apifyResult.error) {
+          warnings.push(`Apify extraction error: ${apifyResult.error}`);
+        } else if (!apifyResult.skipped && apifyResult.title) {
+          // Apify succeeded with meaningful data — skip remaining methods
+          logger.info(
+            { url, actor: apifyResult.actor_used },
+            "Apify extraction succeeded, skipping remaining methods",
+          );
+          break;
+        }
+      }
+    } else if (method === "metadata") {
       logger.info({ url, method }, "Running metadata extraction");
       metadataResult = await extractMetadata(url);
       if (metadataResult.error) {
@@ -241,6 +263,7 @@ export async function runExtractionPipeline(
     metadata: metadataResult,
     browser: browserResult,
     ai: aiResult,
+    apify: apifyResult,
     screenshotUrl,
     warnings,
     aiRecoveryUsed,

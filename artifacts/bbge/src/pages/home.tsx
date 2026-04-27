@@ -65,7 +65,10 @@ interface AssistedResult {
   price: string | null;
   description: string | null;
   seller_name: string | null;
-  seller_profile_signal: string | null;
+  seller_profile_url: string | null;
+  seller_member_since: string | null;
+  seller_review_count: number | null;
+  seller_rating: number | null;
   location: string | null;
   category: string | null;
   condition: string | null;
@@ -915,6 +918,25 @@ export default function Home() {
                           </a>
                         )}
                       </div>
+                      {(result.seller_member_since || result.seller_review_count != null || result.seller_rating != null) && (
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          {result.seller_member_since && (
+                            <span className="text-[11px] text-muted-foreground">
+                              Member since {result.seller_member_since}
+                            </span>
+                          )}
+                          {result.seller_review_count != null && (
+                            <span className="text-[11px] text-muted-foreground">
+                              {result.seller_review_count} review{result.seller_review_count !== 1 ? "s" : ""}
+                            </span>
+                          )}
+                          {result.seller_rating != null && (
+                            <span className="text-[11px] text-muted-foreground">
+                              ★ {result.seller_rating.toFixed(1)}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className="p-4 space-y-1">
                       <span className="text-xs text-muted-foreground uppercase tracking-wider">Location</span>
