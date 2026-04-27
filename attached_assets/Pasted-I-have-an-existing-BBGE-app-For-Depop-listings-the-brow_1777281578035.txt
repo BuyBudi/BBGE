@@ -1,0 +1,101 @@
+I have an existing BBGE app. For Depop listings, the browser extractor already
+gets title, price and description (85% confidence) but has two problems:
+
+1. seller_name is not being extracted even though it's visible in the page text
+2. images array contains Depop navigation/UI images mixed with real listing photos
+
+Do NOT change apifyExtractor.ts, extractionPipeline.ts, or normalizer.ts.
+
+## FIND THE DEPOP SELECTOR FILE
+
+Find where the Depop browser selectors are defined. Look in:
+  artifacts/api-server/src/services/bbge/selectors/
+or anywhere platformSelector or depop selector config is defined.
+Also look in browserExtractor.ts for where platform === "depop" is handled.
+
+## FIX 1 — Extract seller_name from visible text
+
+The Depop page visible_text contains the seller handle in this pattern:
+  "peachlimerevival 565 sold · Active today ( 114 )"
+
+It also appears in the description og:meta as "Sold by @peachlimerevival"
+
+Add seller extraction logic for Depop using this approach in order of priority:
+
+Priority 1 — Extract from description meta tag:
+  Look for the pattern "Sold by @(\w+)" in the description string
+  Extract the username after "@"
+
+Priority 2 — Extract from visible_text:
+  Look for the pattern matching a username followed by "sold" and "Active"
+  Regex: /([a-z0-9_.]+)\s+\d+\s+sold\s+·\s+Active/i
+  Extract capture group 1
+
+Priority 3 — Extract from the listing URL itself:
+  Depop listing URLs follow the pattern:
+  /products/{username}-{product-slug}/
+  Extract the username prefix before the first hyphen that's followed by
+  a known product word, OR more reliably: extract everything before the
+  product description words in the slug.
+  
+  Actually the most reliable: the URL slug starts with the seller username.
+  For URL: /products/peachlimeeevival-vintage-y2k-guess-bag-8d53/
+  The username is the portion that matches the seller's actual profile.
+  
+  Use this regex on the URL pathname: /\/products\/([^-]+(?:-[^-]+)*?)-[a-f0-9]{8}\//
+  This matches the slug up to the 8-character hex ID at the end.
+  But this is complex — only use as last resort.
+
+Implement Priority 1 and 2. Add them to wherever Depop-specific extraction happens.
+
+Also construct seller_profile_url as:
+  https://www.depop.com/{seller_username}/
+
+## FIX 2 — Filter images to only real listing photos
+
+The current image extraction picks up ALL og:image tags including Depop's
+navigation images from contentful.depop.com (category banners, promotional images).
+
+Real Depop listing photos are ALWAYS hosted on:
+  media-photos.depop.com
+
+Navigation/UI images are hosted on:
+  contentful.depop.com  ← these must be EXCLUDED
+
+In the Depop image extraction logic, filter the images array to only include
+URLs that contain "media-photos.depop.com".
+
+If after filtering no images remain, fall back to all images (don't return empty).
+
+## FIX 3 — Extract review count from visible text
+
+The visible text contains: "peachlimerevival 565 sold · Active today ( 114 )"
+The number in parentheses is the review count.
+
+Extract it with regex: /Active\s+(?:today|recently|\d+\s+\w+\s+ago)\s+\(\s*(\d+)\s*\)/i
+Add this to the Depop extraction and pass it through to seller_review_count.
+
+Note: seller_review_count is on NormalizedListing — check if the browser extractor
+result has a field for it, or if it needs to be added to the browser result type
+and then picked up by the normalizer. If adding a new field to browser result is
+complex, store it in the existing attributes/selector_debug map as a string and
+handle it separately. Do the simplest correct thing.
+
+## WHERE TO MAKE CHANGES
+
+Search the codebase for where platform === "depop" or "depop_selector" or 
+depop-specific logic exists. The selector_debug shows:
+  "title": "meta[property='og:title'][content]"
+  "images": "meta[property='og:image'][content]"
+
+So images come from og:image meta tags. The filter needs to go where those
+image URLs are collected for the depop platform.
+
+Look in:
+- artifacts/api-server/src/services/bbge/selectors/ (any depop selector file)
+- artifacts/api-server/src/services/bbge/browserExtractor.ts
+
+Make the minimal targeted changes to fix all three issues.
+Do NOT modify apifyExtractor.ts, normalizer.ts, or extractionPipeline.ts.
+Rebuild: pnpm build --filter @workspace/api-server
+Test: https://www.depop.com/products/peachlimeeevival-vintage-y2k-guess-bag-8d53/
