@@ -219,7 +219,7 @@ export function normalize(params: NormalizeInput): NormalizedListing {
   let method_used = "none";
   let method_detail = "none";
 
-  if (apifyOk && apify.title) {
+  if (apifyOk && (apify.title || apify.price || apify.images.length > 0)) {
     method_used = "apify";
     method_detail = apify.actor_used ?? "apify";
   } else if (ai && !ai.skipped && !ai.error) {

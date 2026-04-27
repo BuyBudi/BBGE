@@ -122,7 +122,11 @@ export async function runExtractionPipeline(
         apifyResult = await extractWithApify(url, detection.platform);
         if (apifyResult.error) {
           warnings.push(`Apify extraction error: ${apifyResult.error}`);
-        } else if (!apifyResult.skipped && apifyResult.title) {
+        } else if (
+          !apifyResult.skipped &&
+          !apifyResult.error &&
+          (apifyResult.title || apifyResult.price || apifyResult.images.length > 0)
+        ) {
           // Apify succeeded with meaningful data — skip remaining methods
           logger.info(
             { url, actor: apifyResult.actor_used },

@@ -1,0 +1,215 @@
+I have an existing TypeScript file at:
+  artifacts/api-server/src/services/bbge/apifyExtractor.ts
+
+The Facebook Marketplace Apify actor (apify/facebook-marketplace-scraper) is 
+returning data successfully but the field normalisation is wrong because the actor 
+uses non-standard nested field names. Do NOT change any other files.
+
+## THE ACTUAL ACTOR RESPONSE SHAPE
+
+Here is what the Facebook Marketplace actor actually returns (from a real run):
+
+{
+  "facebookUrl": "https://...",
+  "id": "935449045765542",
+  "itemUrl": "https://www.facebook.com/marketplace/item/935449045765542/",
+  "listingTitle": "2007 Mercedes-Benz slk-class",
+  "customTitle": "2007 Mercedes-Benz",
+  "condition": "USED",
+  "timestamp": "2026-04-27T03:25:12.000Z",
+  "listingPrice": {
+    "amount": "14999.00",
+    "amount_with_offset": "1499900",
+    "currency": "AUD"
+  },
+  "description": {
+    "text": "Mercedes Benz SLK 200 R171\n\nRegistered January 2007..."
+  },
+  "location": {
+    "reverse_geocode": {
+      "city": "Mandurah",
+      "state": "WA",
+      "city_page": {
+        "display_name": "Mandurah, Western Australia"
+      }
+    },
+    "latitude": -32.52777,
+    "longitude": 115.72448
+  },
+  "locationText": {
+    "text": "Mandurah, WA"
+  },
+  "listingPhotos": [
+    {
+      "__typename": "ProductImage",
+      "image": {
+        "uri": "https://scontent-lax3-2.xx.fbcdn.net/v/...",
+        "height": 720,
+        "width": 960
+      },
+      "id": "1166180452246411"
+    }
+    // ... more photos same shape
+  ],
+  "listingAttributes": [],
+  "deliveryTypes": ["IN_PERSON"],
+  "isHidden": false,
+  "isLive": true,
+  "isPending": false,
+  "isSold": false,
+  "isViewerSeller": false,
+  "listingVideo": [],
+  "listingCategoryId": "807311116002614"
+}
+
+Note: this actor does NOT return seller name, seller profile URL, reviews, or 
+rating. Those fields will remain null for Facebook Marketplace.
+
+## CHANGES TO MAKE IN apifyExtractor.ts
+
+In the extractWithApify function, after fetching the item, replace the entire 
+field normalisation section with platform-aware mapping. 
+
+Add a helper function specifically for the Facebook Marketplace actor response:
+
+function normalizeFacebookMarketplaceItem(item: Record<string, unknown>): Omit<ApifyExtractorResult, 'skipped' | 'error' | 'actor_used'> {
+  
+  // Title: use listingTitle first, fall back to customTitle, then generic title
+  const title = (
+    item["listingTitle"] ?? 
+    item["customTitle"] ?? 
+    item["title"] ?? 
+    null
+  ) as string | null;
+
+  // Price: listingPrice is an object { amount, currency } — format as "$X AUD"
+  const priceObj = item["listingPrice"] as { amount?: string; currency?: string } | null;
+  let price: string | null = null;
+  if (priceObj && priceObj.amount) {
+    const amount = parseFloat(priceObj.amount);
+    const currency = priceObj.currency ?? "";
+    price = `${currency} ${amount.toLocaleString("en-AU", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`.trim();
+    // e.g. "AUD 14,999"
+  }
+
+  // Description: is an object { text: "..." } — extract the text field
+  const descObj = item["description"] as { text?: string } | null;
+  const description = (descObj?.text ?? item["description"] as string ?? null) as string | null;
+
+  // Location: prefer locationText.text (clean string), fall back to constructing 
+  // from location.reverse_geocode
+  const locationTextObj = item["locationText"] as { text?: string } | null;
+  const locationObj = item["location"] as { 
+    reverse_geocode?: { city?: string; state?: string; city_page?: { display_name?: string } }
+  } | null;
+  
+  let location: string | null = null;
+  if (locationTextObj?.text) {
+    location = locationTextObj.text;
+  } else if (locationObj?.reverse_geocode?.city_page?.display_name) {
+    location = locationObj.reverse_geocode.city_page.display_name;
+  } else if (locationObj?.reverse_geocode?.city) {
+    const city = locationObj.reverse_geocode.city;
+    const state = locationObj.reverse_geocode.state ?? "";
+    location = [city, state].filter(Boolean).join(", ");
+  }
+
+  // Images: listingPhotos is an array of objects with nested image.uri
+  const listingPhotos = item["listingPhotos"] as Array<{
+    image?: { uri?: string; height?: number; width?: number };
+    __typename?: string;
+  }> | null;
+  
+  const images: string[] = [];
+  if (Array.isArray(listingPhotos)) {
+    for (const photo of listingPhotos) {
+      const uri = photo?.image?.uri;
+      if (uri && typeof uri === "string") {
+        images.push(uri);
+      }
+    }
+  }
+
+  // Condition: returned as uppercase string e.g. "USED" — title-case it
+  const conditionRaw = item["condition"] as string | null;
+  const condition = conditionRaw 
+    ? conditionRaw.charAt(0).toUpperCase() + conditionRaw.slice(1).toLowerCase()
+    : null;
+
+  // Listed date: use timestamp field
+  const listed_date = (item["timestamp"] as string ?? null);
+
+  // Seller: this actor does not return seller data
+  return {
+    title,
+    price,
+    description,
+    seller_name: null,
+    seller_profile_url: null,
+    seller_member_since: null,
+    seller_review_count: null,
+    seller_rating: null,
+    location,
+    condition,
+    category: null,
+    listed_date,
+    images,
+    attributes: {},
+    raw: item,
+  };
+}
+
+## HOW TO USE THE HELPER
+
+In the extractWithApify function, after getting the item, branch on actor ID:
+
+  let normalized: Omit<ApifyExtractorResult, 'skipped' | 'error' | 'actor_used'>;
+  
+  if (actorId === "apify/facebook-marketplace-scraper") {
+    normalized = normalizeFacebookMarketplaceItem(item);
+  } else {
+    normalized = normalizeGenericItem(item); // rename the existing normalisation logic to this
+  }
+
+  return {
+    ...normalized,
+    skipped: false,
+    error: null,
+    actor_used: actorId,
+  };
+
+## ALSO FIX: the pipeline break condition
+
+In artifacts/api-server/src/services/bbge/extractionPipeline.ts, the current 
+break condition is:
+
+  if (!apifyResult.skipped && apifyResult.title) {
+    break;
+  }
+
+Change this to also break if price OR images were found (not just title), since 
+the FB actor returns listingTitle as title which now maps correctly:
+
+  if (!apifyResult.skipped && !apifyResult.error && (apifyResult.title || apifyResult.price || apifyResult.images.length > 0)) {
+    logger.info({ url, actor: apifyResult.actor_used }, "Apify extraction succeeded, skipping remaining methods");
+    break;
+  }
+
+## ALSO FIX: method_used in normalizer
+
+The normalizer is still showing method_used as "ai_vision" even when Apify ran 
+successfully. In normalizer.ts, find the method_used determination logic and 
+ensure that if apify result exists, is not skipped, has no error, AND has at 
+least one of (title from listingTitle, price, or images.length > 0), then 
+method_used is set to "apify" and method_detail to the actor_used value.
+
+The current check may be only looking at apify.title being non-null — the FB 
+actor now returns title from listingTitle so this should work, but also add 
+apify.price and apify.images.length > 0 as additional OR conditions.
+
+## CONSTRAINTS
+- Only modify apifyExtractor.ts, extractionPipeline.ts (one line change), 
+  and normalizer.ts (one condition change)
+- Do not change any other files
+- Do not change the generic normalisation path — only add the FB-specific helper
+- Rebuild after changes: pnpm build --filter @workspace/api-server
