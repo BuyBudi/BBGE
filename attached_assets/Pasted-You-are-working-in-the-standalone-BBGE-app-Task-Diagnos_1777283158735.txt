@@ -1,0 +1,83 @@
+You are working in the standalone BBGE app.
+
+Task:
+Diagnose why the app cannot be reached at http://localhost:5000/health and fix the app start configuration.
+
+Context:
+When I ran:
+curl http://localhost:5000/health
+
+I received:
+curl: (7) Failed to connect to localhost port 5000
+
+When I ran:
+npm run dev -- --host 0.0.0.0 --port 5000 --strictPort
+
+I received:
+npm error Missing script: "dev"
+
+Requirements:
+
+1. Inspect package.json and identify the existing npm scripts.
+
+2. Inspect the Replit run configuration, including:
+   - .replit
+   - replit.nix if present
+   - server entry file
+   - Vite configuration if present
+
+3. Determine the correct way to start the BBGE app.
+
+4. If no suitable dev/start script exists, update package.json to add scripts:
+
+   "scripts": {
+     "dev": "node server.js",
+     "start": "node server.js"
+   }
+
+   But only use server.js if that is the actual server entry file. If the actual entry file is different, use the correct file.
+
+5. Ensure the app binds to:
+
+   host: 0.0.0.0
+   port: process.env.PORT || 5000
+
+6. Ensure there is a health endpoint:
+
+   GET /health
+
+   It should return JSON:
+
+   {
+     "ok": true,
+     "service": "bbge",
+     "status": "healthy"
+   }
+
+7. Ensure the extraction endpoint still exists and works:
+
+   POST /api/extract
+
+8. Add clear startup logging showing:
+   - service name
+   - host
+   - port
+   - health endpoint
+   - extraction endpoint
+
+9. Do not change the extraction logic unless required to preserve compatibility.
+
+10. After changes, provide the exact commands I should run to test:
+
+   npm run dev
+
+   curl http://localhost:5000/health
+
+   curl -X POST http://localhost:5000/api/extract \
+     -H "Content-Type: application/json" \
+     -d '{"url":"PASTE_TEST_LISTING_URL_HERE"}'
+
+11. Tell me exactly which files were changed and why.
+
+Goal:
+I need BBGE running cleanly on port 5000 so I can integrate it into the main BuyBudi app as the primary extraction engine.

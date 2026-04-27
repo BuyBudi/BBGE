@@ -21,5 +21,15 @@ app.listen(port, (err) => {
     process.exit(1);
   }
 
-  logger.info({ port }, "Server listening");
+  logger.info(
+    {
+      service: "bbge",
+      host: "0.0.0.0",
+      port,
+      health: `http://localhost:${port}/health`,
+      extract: `http://localhost:${port}/api/extract`,
+      bbgeExtract: `http://localhost:${port}/api/bbge/extract`,
+    },
+    "BBGE API server listening",
+  );
 });
