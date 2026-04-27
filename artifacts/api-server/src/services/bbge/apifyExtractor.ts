@@ -196,7 +196,7 @@ export async function extractWithApify(
 
     const run = await client.actor(actorId).call(
       { startUrls: [{ url }], maxItems: 1 },
-      { timeoutSecs: 90 },
+      { waitSecs: 90 },
     );
 
     if (!run || !run.defaultDatasetId) {

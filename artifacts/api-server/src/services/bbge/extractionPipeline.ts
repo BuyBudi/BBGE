@@ -40,6 +40,9 @@ function buildLoginWallResponse(params: {
     description: null,
     seller_name: null,
     seller_profile_url: null,
+    seller_member_since: null,
+    seller_review_count: null,
+    seller_rating: null,
     location: null,
     category: null,
     condition: null,
@@ -71,6 +74,7 @@ function buildLoginWallResponse(params: {
       metadata: {},
       browser: {},
       ai: {},
+      apify: {},
       login_wall: {
         status: "facebook_login_required",
         reason: "Facebook redirected the extractor to the login page.",

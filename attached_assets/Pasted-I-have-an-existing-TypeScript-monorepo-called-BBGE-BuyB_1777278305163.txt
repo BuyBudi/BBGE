@@ -1,0 +1,292 @@
+I have an existing TypeScript monorepo called BBGE (BuyBudi Generic Extractor).
+Do NOT restructure the project, rename files, or change any existing logic unless
+explicitly told to below. Only ADD new files and make the minimal targeted edits described.
+
+## CONTEXT
+
+The extraction pipeline at:
+  artifacts/api-server/src/services/bbge/extractionPipeline.ts
+
+already has a branch for method === "apify" that calls:
+  extractWithApify(url, detection.platform)
+  isApifyConfigured()
+
+These are imported from "./apifyExtractor.js" — but that file does not exist yet.
+This is why the pipeline silently falls through to rendered_browser on Facebook,
+hits the login wall, and returns empty results.
+
+platformConfigs.ts already has "apify" as first method for facebook_marketplace,
+gumtree, depop, and craigslist. The ExtractionMethod type already includes "apify".
+
+The normalizer.ts already receives an `apify` key in its input params but the
+apifyExtractor types are missing so it cannot compile correctly.
+
+## TASK: CREATE apifyExtractor.ts
+
+Create the file:
+  artifacts/api-server/src/services/bbge/apifyExtractor.ts
+
+This is a TypeScript ESM module (.ts file using import/export, not require).
+It must compile cleanly under the existing tsconfig without adding new dependencies
+to tsconfig — just add "apify-client" as a runtime dependency.
+
+### Step 1 — Add apify-client to package.json
+
+In artifacts/api-server/package.json, add to dependencies:
+  "apify-client": "^2.9.4"
+
+Then run: pnpm install --filter @workspace/api-server
+
+### Step 2 — Create apifyExtractor.ts
+
+The file must export exactly these — the pipeline and normalizer already reference them:
+
+─── EXPORTED INTERFACE ────────────────────────────────────────────────────────
+
+export interface ApifyExtractorResult {
+  title: string | null;
+  price: string | null;
+  description: string | null;
+  seller_name: string | null;
+  seller_profile_url: string | null;
+  seller_member_since: string | null;
+  seller_review_count: number | null;
+  seller_rating: number | null;
+  location: string | null;
+  condition: string | null;
+  category: string | null;
+  listed_date: string | null;
+  images: string[];
+  attributes: Record<string, string>;
+  raw: Record<string, unknown>;
+  skipped: boolean;
+  error: string | null;
+  actor_used: string | null;
+}
+
+─── ACTOR MAP ─────────────────────────────────────────────────────────────────
+
+Map platform names (matching exactly what platformDetector.ts returns) to actor IDs:
+
+const PLATFORM_ACTORS: Record<string, string> = {
+  facebook_marketplace: "apify/facebook-marketplace-scraper",
+  gumtree: "epctex/gumtree-scraper",
+  depop: "barnett/depop-scraper",
+  craigslist: "apify/craigslist-scraper",
+};
+
+Do NOT include ebay — it has its own working extraction path.
+
+─── isApifyConfigured() ───────────────────────────────────────────────────────
+
+export function isApifyConfigured(): boolean {
+  return !!process.env["APIFY_API_TOKEN"];
+}
+
+─── extractWithApify() ────────────────────────────────────────────────────────
+
+export async function extractWithApify(
+  url: string,
+  platform: string,
+): Promise<ApifyExtractorResult>
+
+Implementation:
+
+1. If !isApifyConfigured(), return a skipped result immediately:
+   { ...all fields null/empty, skipped: true, error: null, actor_used: null }
+
+2. Look up actorId from PLATFORM_ACTORS[platform].
+   If not found, return skipped result with:
+   skipped: true, error: null, actor_used: null
+   (Do not use a fallback generic actor)
+
+3. Import ApifyClient from "apify-client".
+   Initialise: const client = new ApifyClient({ token: process.env["APIFY_API_TOKEN"] })
+
+4. Call the actor with a 90 second timeout:
+   const run = await client.actor(actorId).call(
+     { startUrls: [{ url }], maxItems: 1 },
+     { timeoutSecs: 90 }
+   );
+
+5. Fetch dataset items:
+   const { items } = await client.dataset(run.defaultDatasetId).listItems();
+   const item = items[0] as Record<string, unknown> | undefined;
+
+6. If items is empty or item is undefined, return:
+   { ...all fields null/empty, skipped: false, error: "Apify returned empty dataset", actor_used: actorId }
+
+7. Normalise item into ApifyExtractorResult using defensive optional chaining.
+   Every field must fall back to null (never throw). Use these fallback chains:
+
+   title:
+     (item["title"] ?? item["name"] ?? item["heading"] ?? null) as string | null
+
+   price:
+     (item["price"] ?? item["priceText"] ?? item["price_text"] ?? null) as string | null
+
+   description:
+     (item["description"] ?? item["body"] ?? item["details"] ?? null) as string | null
+
+   seller_name:
+     (
+       item["sellerName"] ??
+       (item["seller"] as Record<string,unknown> | undefined)?.["name"] ??
+       item["seller_name"] ??
+       null
+     ) as string | null
+
+   seller_profile_url:
+     (
+       item["sellerUrl"] ??
+       (item["seller"] as Record<string,unknown> | undefined)?.["profileUrl"] ??
+       null
+     ) as string | null
+
+   seller_member_since:
+     (
+       item["memberSince"] ??
+       (item["seller"] as Record<string,unknown> | undefined)?.["memberSince"] ??
+       null
+     ) as string | null
+
+   seller_review_count:
+     (
+       item["reviewCount"] ??
+       (item["seller"] as Record<string,unknown> | undefined)?.["reviewCount"] ??
+       null
+     ) as number | null
+
+   seller_rating:
+     (
+       item["rating"] ??
+       (item["seller"] as Record<string,unknown> | undefined)?.["rating"] ??
+       null
+     ) as number | null
+
+   location:
+     (item["location"] ?? item["locationText"] ?? item["city"] ?? null) as string | null
+
+   condition:
+     (item["condition"] ?? item["itemCondition"] ?? null) as string | null
+
+   category:
+     (item["category"] ?? item["breadcrumb"] ?? null) as string | null
+
+   listed_date:
+     (item["listedAt"] ?? item["postedAt"] ?? item["date"] ?? null) as string | null
+
+   images:
+     Array.isArray(item["images"])
+       ? (item["images"] as string[])
+       : Array.isArray(item["imageUrls"])
+         ? (item["imageUrls"] as string[])
+         : Array.isArray(item["photos"])
+           ? (item["photos"] as string[])
+           : []
+
+   attributes:
+     (
+       typeof item["attributes"] === "object" && item["attributes"] !== null
+         ? item["attributes"]
+         : typeof item["specs"] === "object" && item["specs"] !== null
+           ? item["specs"]
+           : {}
+     ) as Record<string, string>
+
+8. Return the full ApifyExtractorResult with:
+   skipped: false
+   error: null
+   actor_used: actorId
+   raw: item (the original unmodified actor response)
+
+9. Wrap ALL of steps 3–8 in try/catch. On any error:
+   log the error using the existing logger from "../../lib/logger.js"
+   return: { ...all fields null/empty, skipped: false, error: err.message, actor_used: actorId }
+
+─── HELPER: empty result ──────────────────────────────────────────────────────
+
+Add a private helper function buildEmptyResult() that returns an ApifyExtractorResult
+with all nullable fields set to null, images: [], attributes: {}, raw: {},
+so the early-return cases above stay concise.
+
+### Step 3 — Edit normalizer.ts (minimal targeted edits only)
+
+Open artifacts/api-server/src/services/bbge/normalizer.ts.
+
+The normalizer already receives an `apify` param. Make only these changes:
+
+1. Add this import at the top:
+   import type { ApifyExtractorResult } from "./apifyExtractor.js";
+
+2. In the NormalizeInput interface (or equivalent params type), ensure this field exists:
+   apify?: ApifyExtractorResult | null;
+   If it already exists with a different type (e.g. `any`), replace the type only.
+
+3. For each listing field in the normalize() function body, insert apify as a
+   mid-priority fallback — HIGHER than browser fallback, LOWER than any existing
+   high-confidence selector result. Use this pattern:
+   
+   existingHighConfidenceValue ?? apify?.fieldName ?? existingLowConfidenceFallback ?? null
+
+   Apply for: title, price, description, seller_name, seller_profile_url,
+   location, condition, category
+
+4. For images: if the existing images array resolves to empty ([]), use:
+   apify?.images ?? []
+
+5. Add these three new fields to the NormalizedListing output object if not present:
+   seller_member_since: apify?.seller_member_since ?? null,
+   seller_review_count: apify?.seller_review_count ?? null,
+   seller_rating: apify?.seller_rating ?? null,
+   
+   Also add them to the NormalizedListing interface/type with types:
+   seller_member_since: string | null;
+   seller_review_count: number | null;
+   seller_rating: number | null;
+
+6. In the extraction.method_used logic: if apifyResult exists, was not skipped,
+   has no error, and title is non-null, set:
+   method_used: "apify"
+   method_detail: apifyResult.actor_used ?? "apify"
+
+7. In the raw section of the output, add:
+   apify: apify ?? {},
+
+### Step 4 — Add APIFY_API_TOKEN secret
+
+In Replit Secrets, add:
+  APIFY_API_TOKEN = (get from https://console.apify.com/account/integrations)
+
+If an .env.example file exists anywhere in the project, add:
+  APIFY_API_TOKEN=your_apify_token_here
+
+### Step 5 — Update frontend seller display
+
+In artifacts/bbge/src — find the component that renders the seller section
+(search for where seller_name is rendered in JSX).
+
+Add display of these fields, only when non-null, matching the existing visual style:
+  seller_member_since  → label "Member Since"
+  seller_review_count  → label "Reviews"
+  seller_rating        → label "Rating" (render as "X / 5" if numeric)
+
+### Step 6 — Verify
+
+After all changes:
+1. Run: pnpm typecheck --filter @workspace/api-server
+   Fix any type errors in the new file only — do not alter existing types to suppress errors.
+2. Run: pnpm build --filter @workspace/api-server
+3. Confirm the app starts and a Facebook Marketplace URL now routes to Apify first.
+4. Confirm that if APIFY_API_TOKEN is missing, the pipeline logs "Apify skipped"
+   and falls through to the next method without crashing.
+
+## CONSTRAINTS
+- Do not modify: browserExtractor.ts, aiVisionExtractor.ts, facebookAiRecovery.ts,
+  facebookLoginWall.ts, metadataExtractor.ts, platformDetector.ts, platformConfigs.ts,
+  routes/index.ts, or any route handler files
+- Do not change any existing NormalizedListing fields — only add the three new seller fields
+- Do not add new API routes
+- Do not change the eBay extraction flow
+- ESM imports only — use .js extensions on all local imports (TypeScript ESM convention)
+- All async functions must use async/await, no callbacks or .then() chains
