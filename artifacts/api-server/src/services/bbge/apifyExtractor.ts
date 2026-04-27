@@ -197,61 +197,115 @@ function normalizeFacebookMarketplaceItem(
 function normalizeGumtreeItem(
   item: Record<string, unknown>,
 ): Omit<ApifyExtractorResult, "skipped" | "error" | "actor_used"> {
-  const title = (item["title"] ?? item["name"] ?? item["heading"] ?? null) as string | null;
 
+  // ── Title ───────────────────────────────────────────────────────────────
+  const title = (item["title"] ?? null) as string | null;
+
+  // ── Price ───────────────────────────────────────────────────────────────
+  // Primary: adPriceData.priceText (already formatted, e.g. "$57,000")
+  // Fallback: format from adPriceData.amount + currency
   let price: string | null = null;
-  const rawPrice = item["price"] ?? item["priceText"] ?? item["price_text"];
-  if (typeof rawPrice === "string") {
-    price = rawPrice;
-  } else if (typeof rawPrice === "object" && rawPrice !== null) {
-    const p = rawPrice as Record<string, unknown>;
-    price = (p["formatted"] ?? p["amount"] ?? p["value"] ?? null) as string | null;
+  const priceData = item["adPriceData"] as Record<string, unknown> | undefined;
+  if (priceData) {
+    if (typeof priceData["priceText"] === "string") {
+      price = priceData["priceText"];
+      const currency = priceData["currency"] as string | undefined;
+      if (currency && !price.includes(currency)) {
+        price = `${currency} ${price}`;
+      }
+    } else if (typeof priceData["amount"] === "number" && (priceData["amount"] as number) > 0) {
+      const currency = (priceData["currency"] as string) ?? "AUD";
+      const formatted = (priceData["amount"] as number).toLocaleString("en-AU");
+      price = `${currency} ${formatted}`;
+    }
   }
 
-  const description = (item["description"] ?? item["body"] ?? null) as string | null;
+  // ── Description ─────────────────────────────────────────────────────────
+  const description = (item["description"] ?? null) as string | null;
 
-  const sellerObj = item["seller"] as Record<string, unknown> | undefined;
-  const seller_name = (
-    item["sellerName"] ?? sellerObj?.["name"] ?? item["seller_name"] ?? null
-  ) as string | null;
-  const seller_profile_url = (
-    item["sellerUrl"] ?? sellerObj?.["profileUrl"] ?? sellerObj?.["url"] ?? null
-  ) as string | null;
-  const seller_member_since = (
-    item["memberSince"] ?? sellerObj?.["memberSince"] ?? null
-  ) as string | null;
-  const seller_review_count = (
-    item["reviewCount"] ?? sellerObj?.["reviewCount"] ?? null
-  ) as number | null;
-  const seller_rating = (
-    item["rating"] ?? sellerObj?.["rating"] ?? null
-  ) as number | null;
-
+  // ── Location ────────────────────────────────────────────────────────────
+  // Primary: adLocationData.mapAddress (e.g. "Como, WA")
+  // Fallback: construct from suburb + state
   let location: string | null = null;
-  const rawLocation = item["location"] ?? item["locationText"] ?? item["suburb"];
-  if (typeof rawLocation === "string") {
-    location = rawLocation;
-  } else if (typeof rawLocation === "object" && rawLocation !== null) {
-    const l = rawLocation as Record<string, unknown>;
-    location = (l["text"] ?? l["display_name"] ?? l["suburb"] ?? null) as string | null;
+  const locationData = item["adLocationData"] as Record<string, unknown> | undefined;
+  if (locationData) {
+    if (typeof locationData["mapAddress"] === "string") {
+      location = locationData["mapAddress"];
+    } else {
+      const suburb = locationData["suburb"] as string | undefined;
+      const state = locationData["state"] as string | undefined;
+      location = [suburb, state].filter(Boolean).join(", ") || null;
+    }
+  }
+  // Secondary fallback: listingInfo array
+  if (!location) {
+    const listingInfo = item["listingInfo"] as Array<Record<string, unknown>> | undefined;
+    if (Array.isArray(listingInfo)) {
+      const locationEntry = listingInfo.find((e) => e["name"] === "Location");
+      if (locationEntry) location = (locationEntry["value"] as string) ?? null;
+    }
   }
 
-  const condition = (item["condition"] ?? item["itemCondition"] ?? null) as string | null;
-  const category = (item["category"] ?? item["categoryName"] ?? null) as string | null;
-  const listed_date = (
-    item["listedAt"] ?? item["postedAt"] ?? item["date"] ?? item["timestamp"] ?? null
-  ) as string | null;
+  // ── Seller ──────────────────────────────────────────────────────────────
+  const posterData = item["adPosterData"] as Record<string, unknown> | undefined;
+  const seller_name = (posterData?.["name"] as string | undefined)?.trim() ?? null;
 
+  const otherListingsPath = posterData?.["otherListingsUrl"] as string | undefined;
+  const seller_profile_url = otherListingsPath
+    ? `https://www.gumtree.com.au${otherListingsPath}`
+    : null;
+
+  const seller_member_since = (posterData?.["memberSince"] as string | undefined) ?? null;
+  const seller_review_count: number | null = null;
+  const seller_rating: number | null = null;
+
+  // ── Images ──────────────────────────────────────────────────────────────
+  // Use "large" URL from each image object for best quality
   const images: string[] = [];
-  const rawImages = item["images"] ?? item["imageUrls"] ?? item["photos"] ?? item["media"];
+  const rawImages =
+    (item["images"] as Array<Record<string, unknown>> | undefined) ??
+    ((item["media"] as Record<string, unknown> | undefined)?.["images"] as
+      | Array<Record<string, unknown>>
+      | undefined);
+
   if (Array.isArray(rawImages)) {
     for (const img of rawImages) {
-      if (typeof img === "string") {
-        images.push(img);
-      } else if (typeof img === "object" && img !== null) {
-        const imgObj = img as Record<string, unknown>;
-        const uri = imgObj["uri"] ?? imgObj["url"] ?? imgObj["src"] ?? imgObj["href"];
-        if (typeof uri === "string") images.push(uri);
+      const uri =
+        (img["large"] as string | undefined) ??
+        (img["xlarge"] as string | undefined) ??
+        (img["baseurl"] as string | undefined) ??
+        (img["small"] as string | undefined);
+      if (uri) images.push(uri);
+    }
+  }
+
+  // ── Category ────────────────────────────────────────────────────────────
+  const category = (item["categoryName"] as string | undefined) ?? null;
+
+  // ── Condition ───────────────────────────────────────────────────────────
+  const condition: string | null = null;
+
+  // ── Listed date ─────────────────────────────────────────────────────────
+  let listed_date: string | null = null;
+  const listingInfo = item["listingInfo"] as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(listingInfo)) {
+    const dateEntry = listingInfo.find((e) => e["name"] === "Date Listed");
+    if (dateEntry) listed_date = (dateEntry["value"] as string) ?? null;
+  }
+  if (!listed_date) {
+    listed_date = (item["scrapedAt"] as string | undefined) ?? null;
+  }
+
+  // ── Attributes ──────────────────────────────────────────────────────────
+  // Extract categoryInfo array into a flat key-value Record
+  const attributes: Record<string, string> = {};
+  const categoryInfo = item["categoryInfo"] as
+    | Array<{ name: string; value: string }>
+    | undefined;
+  if (Array.isArray(categoryInfo)) {
+    for (const entry of categoryInfo) {
+      if (entry.name && entry.value) {
+        attributes[entry.name] = entry.value;
       }
     }
   }
@@ -270,7 +324,7 @@ function normalizeGumtreeItem(
     category,
     listed_date,
     images,
-    attributes: {},
+    attributes,
     raw: item,
   };
 }

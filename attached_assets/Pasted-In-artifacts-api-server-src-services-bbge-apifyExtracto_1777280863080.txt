@@ -1,0 +1,237 @@
+In artifacts/api-server/src/services/bbge/apifyExtractor.ts, the Gumtree actor
+(memo23/gumtree-cheerio) is returning data but the normalizeGumtreeItem function
+is not extracting it because the actor uses deeply nested non-standard field names.
+
+Do NOT change any other files. Only modify apifyExtractor.ts.
+
+## ACTUAL GUMTREE ACTOR RESPONSE SHAPE
+
+The actor returns a single item with this structure (all data is nested):
+
+{
+  "title": "Mercedes E400 Coupe 2017",          // top-level, works
+  "description": "Pristine condition...",        // top-level, works
+  "categoryName": "Cars, Vans & Utes",           // top-level
+
+  // Price is nested under adPriceData:
+  "adPriceData": {
+    "amount": 57000,
+    "currency": "AUD",
+    "priceText": "$57,000",
+    "type": "PLEASE_CONTACT",
+    "isFree": false
+  },
+
+  // Location is nested under adLocationData:
+  "adLocationData": {
+    "suburb": "Como",
+    "state": "WA",
+    "postcode": "6152",
+    "mapAddress": "Como, WA",
+    "latitude": -31.9997,
+    "longitude": 115.86761
+  },
+
+  // Seller is nested under adPosterData:
+  "adPosterData": {
+    "name": "David",
+    "posterType": "PRIVATE",
+    "memberSince": "February 2012",
+    "profileImageUrl": "https://images.gumtree.com.au/...",
+    "otherListingsUrl": "/web/s-user/6248974995843",
+    "phoneNumberExists": false,
+    "phoneVerified": false,
+    "carDealer": false,
+    "proseller": false
+  },
+
+  // Images: array of objects each with small/large/xlarge URLs
+  // Available at BOTH item["images"] AND item["media"]["images"]
+  "images": [
+    {
+      "small": "https://images.gumtree.com.au/...",
+      "large": "https://images.gumtree.com.au/...",
+      "xlarge": "https://images.gumtree.com.au/...",
+      "baseurl": "https://images.gumtree.com.au/..."
+    }
+    // ... more
+  ],
+
+  // Listed date and location also available in listingInfo array:
+  "listingInfo": [
+    { "name": "Location", "value": "Como, WA" },
+    { "name": "Listed By", "value": "David" },
+    { "name": "Date Listed", "value": "23 Apr 2026" },
+    { "name": "Last Edited", "value": "24 Apr 2026" }
+  ],
+
+  // Vehicle specs in categoryInfo array:
+  "categoryInfo": [
+    { "name": "Make, Model", "value": "Mercedes-Benz E400" },
+    { "name": "Year", "value": "2017" },
+    { "name": "Odometer", "value": "91,000 km" },
+    { "name": "Body Type", "value": "Convertible" },
+    { "name": "Fuel Type", "value": "Petrol - Premium Unleaded" },
+    { "name": "Drive Train", "value": "All Wheel Drive" },
+    { "name": "Colour", "value": "Blue" },
+    { "name": "Cylinder Configuration", "value": "6 cyl" },
+    { "name": "Engine Capacity", "value": "3.0L" },
+    { "name": "Seller Type", "value": "Private seller" }
+  ],
+
+  // Negotiable flag:
+  "adHeadingData": { "title": "...", "negotiable": true }
+}
+
+## REPLACE normalizeGumtreeItem ENTIRELY
+
+Replace the existing normalizeGumtreeItem function with this precise implementation:
+
+function normalizeGumtreeItem(
+  item: Record<string, unknown>
+): Omit<ApifyExtractorResult, "skipped" | "error" | "actor_used"> {
+
+  // ── Title ───────────────────────────────────────────────────────────────
+  const title = (item["title"] ?? null) as string | null;
+
+  // ── Price ───────────────────────────────────────────────────────────────
+  // Primary: adPriceData.priceText (already formatted, e.g. "$57,000")
+  // Fallback: format from adPriceData.amount + currency
+  let price: string | null = null;
+  const priceData = item["adPriceData"] as Record<string, unknown> | undefined;
+  if (priceData) {
+    if (typeof priceData["priceText"] === "string") {
+      price = priceData["priceText"];
+      // Prepend currency if not already included
+      const currency = priceData["currency"] as string | undefined;
+      if (currency && !price.includes(currency)) {
+        price = `${currency} ${price}`;
+      }
+    } else if (typeof priceData["amount"] === "number" && priceData["amount"] > 0) {
+      const currency = (priceData["currency"] as string) ?? "AUD";
+      const formatted = (priceData["amount"] as number).toLocaleString("en-AU");
+      price = `${currency} ${formatted}`;
+    }
+  }
+
+  // ── Description ─────────────────────────────────────────────────────────
+  const description = (item["description"] ?? null) as string | null;
+
+  // ── Location ────────────────────────────────────────────────────────────
+  // Primary: adLocationData.mapAddress (e.g. "Como, WA")
+  // Fallback: construct from suburb + state
+  let location: string | null = null;
+  const locationData = item["adLocationData"] as Record<string, unknown> | undefined;
+  if (locationData) {
+    if (typeof locationData["mapAddress"] === "string") {
+      location = locationData["mapAddress"];
+    } else {
+      const suburb = locationData["suburb"] as string | undefined;
+      const state = locationData["state"] as string | undefined;
+      location = [suburb, state].filter(Boolean).join(", ") || null;
+    }
+  }
+  // Secondary fallback: listingInfo array
+  if (!location) {
+    const listingInfo = item["listingInfo"] as Array<Record<string, unknown>> | undefined;
+    if (Array.isArray(listingInfo)) {
+      const locationEntry = listingInfo.find((e) => e["name"] === "Location");
+      if (locationEntry) location = (locationEntry["value"] as string) ?? null;
+    }
+  }
+
+  // ── Seller ──────────────────────────────────────────────────────────────
+  const posterData = item["adPosterData"] as Record<string, unknown> | undefined;
+  const seller_name = (posterData?.["name"] as string | undefined)?.trim() ?? null;
+  
+  // Construct full profile URL from relative otherListingsUrl
+  const otherListingsPath = posterData?.["otherListingsUrl"] as string | undefined;
+  const seller_profile_url = otherListingsPath
+    ? `https://www.gumtree.com.au${otherListingsPath}`
+    : null;
+
+  const seller_member_since = (posterData?.["memberSince"] as string | undefined) ?? null;
+  
+  // Gumtree doesn't return review count or rating in this actor
+  const seller_review_count: number | null = null;
+  const seller_rating: number | null = null;
+
+  // ── Images ──────────────────────────────────────────────────────────────
+  // Use "large" URL from each image object for best quality
+  const images: string[] = [];
+  const rawImages =
+    (item["images"] as Array<Record<string, unknown>> | undefined) ??
+    ((item["media"] as Record<string, unknown> | undefined)?.["images"] as
+      | Array<Record<string, unknown>>
+      | undefined);
+
+  if (Array.isArray(rawImages)) {
+    for (const img of rawImages) {
+      // Prefer large, fallback to xlarge, then baseurl, then small
+      const uri =
+        (img["large"] as string | undefined) ??
+        (img["xlarge"] as string | undefined) ??
+        (img["baseurl"] as string | undefined) ??
+        (img["small"] as string | undefined);
+      if (uri) images.push(uri);
+    }
+  }
+
+  // ── Category ────────────────────────────────────────────────────────────
+  const category = (item["categoryName"] as string | undefined) ?? null;
+
+  // ── Condition ───────────────────────────────────────────────────────────
+  // Gumtree doesn't return condition directly — leave null
+  const condition: string | null = null;
+
+  // ── Listed date ─────────────────────────────────────────────────────────
+  // Extract from listingInfo array
+  let listed_date: string | null = null;
+  const listingInfo = item["listingInfo"] as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(listingInfo)) {
+    const dateEntry = listingInfo.find((e) => e["name"] === "Date Listed");
+    if (dateEntry) listed_date = (dateEntry["value"] as string) ?? null;
+  }
+  // Fallback to scrapedAt
+  if (!listed_date) {
+    listed_date = (item["scrapedAt"] as string | undefined) ?? null;
+  }
+
+  // ── Attributes ──────────────────────────────────────────────────────────
+  // Extract categoryInfo array into a flat key-value Record
+  const attributes: Record<string, string> = {};
+  const categoryInfo = item["categoryInfo"] as
+    | Array<{ name: string; value: string }>
+    | undefined;
+  if (Array.isArray(categoryInfo)) {
+    for (const entry of categoryInfo) {
+      if (entry.name && entry.value) {
+        attributes[entry.name] = entry.value;
+      }
+    }
+  }
+
+  return {
+    title,
+    price,
+    description,
+    seller_name,
+    seller_profile_url,
+    seller_member_since,
+    seller_review_count,
+    seller_rating,
+    location,
+    condition,
+    category,
+    listed_date,
+    images,
+    attributes,
+    raw: item,
+  };
+}
+
+## CONSTRAINTS
+- Only modify apifyExtractor.ts
+- Do not touch normalizer.ts, extractionPipeline.ts, or any other file
+- Rebuild: pnpm build --filter @workspace/api-server
+- Test URL: https://www.gumtree.com.au/web/listing/cars-vans-utes/1337367984
