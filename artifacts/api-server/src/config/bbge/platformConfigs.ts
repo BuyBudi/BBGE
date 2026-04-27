@@ -27,13 +27,13 @@ export const platformConfigs: PlatformConfig[] = [
   {
     name: "gumtree",
     domains: ["gumtree.com.au", "gumtree.com"],
-    methodOrder: ["apify", "metadata", "rendered_browser"],
+    methodOrder: ["apify", "rendered_browser"],
     confidence: 95,
   },
   {
     name: "depop",
     domains: ["depop.com"],
-    methodOrder: ["metadata", "rendered_browser"],
+    methodOrder: ["rendered_browser"],
     confidence: 95,
   },
   {
