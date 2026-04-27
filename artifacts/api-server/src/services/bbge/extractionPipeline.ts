@@ -118,15 +118,19 @@ export async function runExtractionPipeline(
         warnings.push(browserResult.error);
       }
 
-      // Facebook login wall detection
+      // Facebook login wall detection — runs BEFORE scoring or AI recovery
       if (detection.platform === "facebook" && browserResult) {
+        // Also provide canonical URL from metadata (og:url / <link rel="canonical">)
+        // so we can detect login walls that don't change the browser URL.
+        const canonicalFromMeta = metadataResult?.canonical_url ?? null;
         const wallCheck = detectFacebookLoginWall({
           pageUrl: browserResult.page_url ?? "",
+          canonicalUrl: canonicalFromMeta,
           pageTitle: browserResult.title,
           visibleText: browserResult.visible_text ?? "",
           price: browserResult.price,
           seller_name: browserResult.seller_name,
-          title: browserResult.title,
+          description: browserResult.description,
         });
 
         if (wallCheck.detected) {

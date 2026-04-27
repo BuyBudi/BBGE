@@ -374,42 +374,50 @@ export default function Home() {
         {/* ───── Facebook Login Wall ───── */}
         {result && isLoginWall && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <Card className="border-blue-500/30 bg-blue-500/5">
-              <CardContent className="pt-6 pb-6">
-                <div className="flex items-start gap-4">
-                  <div className="h-10 w-10 rounded-full bg-blue-500/10 border border-blue-500/30 flex items-center justify-center shrink-0">
-                    <Lock className="h-5 w-5 text-blue-400" />
+            <Card className="border-blue-500/30 bg-blue-950/40">
+              <CardContent className="pt-8 pb-8">
+                <div className="flex flex-col items-center text-center gap-5 max-w-lg mx-auto">
+                  <div className="h-14 w-14 rounded-full bg-blue-500/10 border border-blue-500/30 flex items-center justify-center">
+                    <Lock className="h-7 w-7 text-blue-400" />
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="font-semibold text-blue-300 text-base mb-1">Facebook Login Wall Detected</h3>
+                  <div className="space-y-2">
+                    <h3 className="text-lg font-semibold text-white">Facebook Marketplace Login Required</h3>
                     <p className="text-sm text-muted-foreground leading-relaxed">
-                      Facebook redirected the extractor to its login page — your listing is private or requires an account to view.
-                      BBGE cannot bypass this. Instead, open the listing yourself and supply the content below.
+                      BuyBudi cannot access listing details from this public link because Facebook requires a logged-in session.
+                      Open the listing yourself while logged in, then use Assisted Capture to supply the details.
                     </p>
-                    <div className="mt-4 flex flex-wrap gap-3">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="border-blue-500/40 text-blue-300 hover:bg-blue-500/10 gap-2"
-                        onClick={() => setShowAssistedForm((v) => !v)}
-                      >
-                        <FileText className="h-4 w-4" />
-                        Paste Listing Details
-                        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showAssistedForm ? "rotate-180" : ""}`} />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-muted-foreground gap-2"
-                        onClick={() => {
-                          setShowAssistedForm(true);
-                          setTimeout(() => document.getElementById("assisted-pasted-text")?.focus(), 50);
-                        }}
-                      >
-                        <MessageSquare className="h-4 w-4" />
-                        Paste Page Text / HTML
-                      </Button>
+                    <div className="flex items-center justify-center gap-2 pt-1">
+                      <Badge variant="outline" className="text-[10px] font-mono bg-red-500/10 text-red-400 border-red-500/30">confidence: 0%</Badge>
+                      <Badge variant="outline" className="text-[10px] font-mono bg-muted/40 text-muted-foreground border-muted">status: facebook_login_required</Badge>
                     </div>
+                  </div>
+                  <div className="flex flex-wrap gap-3 justify-center pt-1">
+                    <Button
+                      size="default"
+                      className="gap-2 font-semibold"
+                      onClick={() => { setShowAssistedForm(true); setTimeout(() => document.getElementById("assisted-capture-section")?.scrollIntoView({ behavior: "smooth" }), 50); }}
+                    >
+                      <Upload className="h-4 w-4" />
+                      Assisted Capture
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="default"
+                      className="gap-2 border-muted text-muted-foreground hover:text-foreground"
+                      onClick={() => { setShowAssistedForm(true); setTimeout(() => document.getElementById("assisted-pasted-text")?.focus(), 100); }}
+                    >
+                      <FileText className="h-4 w-4" />
+                      Enter Manually
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="default"
+                      className="gap-2 text-muted-foreground"
+                      onClick={() => { setResult(null); setShowAssistedForm(false); }}
+                    >
+                      <X className="h-4 w-4" />
+                      Cancel
+                    </Button>
                   </div>
                 </div>
               </CardContent>
@@ -417,7 +425,7 @@ export default function Home() {
 
             {/* Assisted Capture Form */}
             {showAssistedForm && (
-              <Card className="border-muted">
+              <Card id="assisted-capture-section" className="border-muted">
                 <CardHeader className="pb-3 border-b border-muted">
                   <CardTitle className="text-sm font-semibold flex items-center gap-2 text-muted-foreground uppercase tracking-wider">
                     <Upload className="h-4 w-4" />
@@ -443,10 +451,11 @@ export default function Home() {
 
                   {/* Pasted text */}
                   <div className="space-y-1.5">
-                    <label id="assisted-pasted-text" className="text-xs text-muted-foreground uppercase tracking-wider font-medium">
+                    <label className="text-xs text-muted-foreground uppercase tracking-wider font-medium">
                       Pasted Listing Text or Page Source
                     </label>
                     <Textarea
+                      id="assisted-pasted-text"
                       value={pastedText}
                       onChange={(e) => setPastedText(e.target.value)}
                       placeholder="Paste the full text from the listing page here (Ctrl+A, Ctrl+C from the page, then paste). You can also paste raw HTML or page source."

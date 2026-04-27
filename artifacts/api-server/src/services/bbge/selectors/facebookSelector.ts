@@ -241,24 +241,36 @@ export async function extractFacebook(
   }
 
   // ----- IMAGES -----
+  // Only include actual listing product photos.
+  // Exclude: static.xx.fbcdn.net (UI sprites/icons), rsrc.php paths (bundled assets),
+  //          profile placeholders, login-page graphics, icons, emoji, tiny images.
   let images: string[] = [];
   try {
     images = await page.locator("img[src]").evaluateAll(
       (imgs) =>
         (imgs as HTMLImageElement[])
           .map((img) => img.src || "")
-          .filter(
-            (src) =>
-              src.startsWith("http") &&
-              (src.includes("fbcdn") || src.includes("scontent")) &&
-              !src.includes("icon") &&
-              !src.includes("emoji") &&
-              !src.includes("s_") &&
-              src.length > 40,
-          )
+          .filter((src) => {
+            if (!src.startsWith("http")) return false;
+            // Must be a Facebook CDN domain
+            if (!src.includes("fbcdn") && !src.includes("scontent")) return false;
+            // Exclude static asset CDN (logos, sprites, UI icons)
+            if (src.includes("static.xx.fbcdn.net")) return false;
+            if (src.includes("static.ak.fbcdn.net")) return false;
+            if (src.includes("/rsrc.php/")) return false;
+            // Exclude known non-listing patterns
+            if (src.includes("/icon")) return false;
+            if (src.includes("emoji")) return false;
+            if (src.includes("/s_")) return false;
+            if (src.includes("profile_pic")) return false;
+            if (src.includes("safe_image")) return false;
+            // Listing photos tend to have longer, content-addressed URLs
+            if (src.length < 60) return false;
+            return true;
+          })
           .slice(0, 20),
     );
-    if (images.length > 0) debug["images"] = "img[src](fbcdn filter)";
+    if (images.length > 0) debug["images"] = "img[src](fbcdn_listing_filter)";
   } catch {
     images = [];
   }

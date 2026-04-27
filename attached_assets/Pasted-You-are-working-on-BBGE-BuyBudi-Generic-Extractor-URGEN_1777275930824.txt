@@ -1,0 +1,140 @@
+You are working on BBGE (BuyBudi Generic Extractor).
+
+URGENT BUG FIX:
+
+Facebook Marketplace login pages are being incorrectly treated as successful listing extractions.
+
+Example current output:
+
+canonical_url = https://www.facebook.com/login
+title = Facebook
+confidence_score = 40
+
+This is wrong.
+
+====================================================
+FIX REQUIRED
+====================================================
+
+Implement a hard detection rule BEFORE scoring.
+
+If ANY of these are true:
+
+1. canonical_url contains facebook.com/login
+2. page_url contains /login/?next=
+3. title exactly equals "Facebook"
+4. visible_text contains:
+   - Log into Facebook
+   - Create new account
+   - Forgot password
+5. extracted price is null
+6. seller_name is null
+7. description is null
+
+Then classify as:
+
+{
+  success: false,
+  status: "facebook_login_required",
+  platform: "facebook_marketplace",
+  confidence_score: 0,
+  ratingAllowed: false,
+  reason: "Facebook redirected extractor to login page.",
+  next_step: "Use Assisted Facebook Capture."
+}
+
+====================================================
+SCORING FIX
+====================================================
+
+When login wall detected:
+
+- do NOT count title
+- do NOT count images
+- do NOT count metadata
+- do NOT show 40%
+
+Return 0%.
+
+====================================================
+IMAGE FILTER FIX
+====================================================
+
+Ignore these image domains:
+
+static.xx.fbcdn.net
+facebook.com/images
+fbcdn logos
+icons
+sprites
+
+Do not count them as listing images.
+
+====================================================
+UI FIX
+====================================================
+
+Replace current result card with:
+
+Facebook Marketplace Login Required
+
+BuyBudi cannot access listing details from the public link because Facebook requires a logged-in session.
+
+Buttons:
+
+1. Assisted Capture (Primary)
+2. Enter Manually
+3. Cancel
+
+====================================================
+NEW ASSISTED CAPTURE TAB
+====================================================
+
+Create a visible tab:
+
+Facebook Assisted Capture
+
+Allow user to paste:
+
+- listing title
+- price
+- description
+- seller name
+- location
+- screenshots
+
+Then run OpenAI extraction on that content.
+
+====================================================
+TEST THIS URL
+====================================================
+
+https://www.facebook.com/marketplace/item/935449045765542/
+
+Expected:
+
+- no 40% confidence
+- no fake Facebook title
+- no fake image
+- login wall detected
+- status facebook_login_required
+- Assisted Capture shown
+
+====================================================
+IMPORTANT
+====================================================
+
+Prototype behaviour must be honest.
+
+It is better to show:
+
+0% cannot access listing
+
+than fake:
+
+40% extracted
+
+After fixing, tell me:
+- files changed
+- exact detection logic added
+- how to test
