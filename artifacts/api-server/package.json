@@ -23,7 +23,8 @@
     "pino-http": "^10",
     "playwright": "^1.59.1",
     "uuid": "^14.0.0",
-    "apify-client": "^2.9.4"
+    "apify-client": "^2.9.4",
+    "proxy-agent": "^6.4.0"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",

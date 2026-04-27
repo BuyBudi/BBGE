@@ -100,6 +100,17 @@ async function buildAll() {
       "puppeteer",
       "puppeteer-core",
       "electron",
+      // apify-client and its dependency tree — these pull in native/CJS modules
+      // (proxy-agent, got-scraping, etc.) that don't bundle cleanly with esbuild.
+      // Externalize the whole family so Node resolves them from node_modules at runtime.
+      "apify-client",
+      "proxy-agent",
+      "got-scraping",
+      "got",
+      "pac-proxy-agent",
+      "http-proxy-agent",
+      "https-proxy-agent",
+      "socks-proxy-agent",
     ],
     sourcemap: "linked",
     plugins: [

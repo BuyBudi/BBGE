@@ -1,0 +1,66 @@
+I have a TypeScript monorepo using esbuild to bundle the api-server. Apify-client 
+was just added and is failing at runtime with:
+
+  Cannot find module 'proxy-agent'
+  Require stack: - /home/runner/workspace/artifacts/api-server/dist/index.mjs
+
+This means proxy-agent (a peer dependency of apify-client) is not being bundled 
+or installed. Do NOT modify any extraction logic, normalizer, or pipeline files.
+Only fix the dependency and build configuration.
+
+## STEP 1 — Install missing peer dependency
+
+In artifacts/api-server/package.json, add to dependencies:
+  "proxy-agent": "^6.4.0"
+
+Also verify these are present (add if missing):
+  "got-scraping": "^4.0.0"
+
+Then run: pnpm install --filter @workspace/api-server
+
+## STEP 2 — Check build.mjs for external/bundle config
+
+Open artifacts/api-server/build.mjs.
+
+The apify-client package (and its dependencies including proxy-agent, got-scraping, 
+and other Node.js native modules) must NOT be listed in the esbuild `external` array.
+They must be bundled in, OR the node_modules must be available at runtime.
+
+Check the current esbuild config in build.mjs:
+
+Option A — If using `bundle: true` with an `external` array:
+  Remove "apify-client", "proxy-agent", "got-scraping" from external if they are there.
+  If there is a blanket external rule excluding node_modules (e.g. using 
+  esbuild-plugin-node-externals or similar), add an explicit exception for 
+  apify-client and its deps so they get bundled.
+
+Option B — If apify-client cannot be bundled cleanly by esbuild due to CJS/ESM 
+  conflicts or native modules, switch apify-client to be a runtime dependency 
+  that is NOT bundled. Do this by adding "apify-client" to the external array 
+  in the esbuild config AND ensuring node_modules is available to the dist output 
+  at runtime in Replit.
+
+Option C — If the build uses __dirname or package resolution that breaks with 
+  bundled apify-client, the cleanest fix in a Replit environment is:
+  Add "apify-client" and "proxy-agent" and "got-scraping" to the esbuild external 
+  array so they are required from node_modules at runtime (not bundled).
+  Then ensure pnpm install has run so they exist in node_modules at runtime.
+
+Prefer Option C if you are unsure — it is the safest approach for complex 
+packages with native dependencies in a Replit environment.
+
+## STEP 3 — Verify the fix
+
+After changing build.mjs and package.json:
+
+1. Run: pnpm install --filter @workspace/api-server
+2. Run: pnpm build --filter @workspace/api-server  
+3. Start the server and test a Facebook Marketplace URL
+4. Confirm the warning "Cannot find module 'proxy-agent'" is gone from the response
+5. Confirm raw.apify in the response no longer has error set
+
+## CONSTRAINTS
+- Do not modify apifyExtractor.ts, extractionPipeline.ts, normalizer.ts, or any 
+  other source files
+- Do not change the pnpm-workspace.yaml or root package.json
+- Only change artifacts/api-server/package.json and artifacts/api-server/build.mjs
