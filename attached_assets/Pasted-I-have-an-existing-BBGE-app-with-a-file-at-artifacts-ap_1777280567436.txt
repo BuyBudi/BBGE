@@ -1,0 +1,210 @@
+I have an existing BBGE app with a file at:
+  artifacts/api-server/src/services/bbge/apifyExtractor.ts
+
+Two problems need fixing for Gumtree AU support. Do NOT change any other files
+except apifyExtractor.ts.
+
+## PROBLEM 1 — Wrong Gumtree actor ID
+
+The current PLATFORM_ACTORS map has:
+  gumtree: "epctex/gumtree-scraper"
+
+This actor does not exist. Replace it with TWO actors to try in order.
+
+Change the PLATFORM_ACTORS map to use a primary and fallback pattern for gumtree:
+
+const PLATFORM_ACTORS: Record<string, string> = {
+  facebook_marketplace: "apify/facebook-marketplace-scraper",
+  gumtree: "crawlerbros/gumtree-scraper",        // primary: supports .com.au explicitly
+  gumtree_fallback: "memo23/gumtree-cheerio",    // fallback if primary fails
+  depop: "barnett/depop-scraper",
+  craigslist: "apify/craigslist-scraper",
+};
+
+## PROBLEM 2 — Gumtree actor input schema
+
+The Gumtree actors use different input than the Facebook actor.
+For crawlerbros/gumtree-scraper, the correct input is:
+  {
+    startUrls: [{ url: "<listing_url>" }],
+    includeListingDetails: true,
+    maxItems: 1
+  }
+
+For memo23/gumtree-cheerio, the correct input is:
+  {
+    startUrls: [{ url: "<listing_url>" }],
+    includeListingDetails: true,
+    maxResults: 1
+  }
+
+## CHANGES TO MAKE
+
+In the extractWithApify function, update the actor call logic:
+
+1. For gumtree platform, first try "crawlerbros/gumtree-scraper" with input:
+   { startUrls: [{ url }], includeListingDetails: true, maxItems: 1 }
+
+2. If that actor returns empty dataset OR throws "Actor not found", 
+   try "memo23/gumtree-cheerio" with input:
+   { startUrls: [{ url }], includeListingDetails: true, maxResults: 1 }
+
+3. For all other platforms keep the existing input:
+   { startUrls: [{ url }], maxItems: 1 }
+
+Implement this as a helper function buildActorInput(actorId, url) that returns
+the correct input object for each actor:
+
+function buildActorInput(actorId: string, url: string): Record<string, unknown> {
+  if (actorId === "crawlerbros/gumtree-scraper") {
+    return { startUrls: [{ url }], includeListingDetails: true, maxItems: 1 };
+  }
+  if (actorId === "memo23/gumtree-cheerio") {
+    return { startUrls: [{ url }], includeListingDetails: true, maxResults: 1 };
+  }
+  if (actorId === "curious_coder/facebook-marketplace") {
+    return { 
+      urls: [url], 
+      getListingDetails: true, 
+      getAllListingPhotos: true,
+      maxPagesPerUrl: 1
+    };
+  }
+  // Default for all other actors
+  return { startUrls: [{ url }], maxItems: 1 };
+}
+
+## PROBLEM 3 — Gumtree field normalisation
+
+Add a normalizeGumtreeItem function alongside the existing normalizeFacebookMarketplaceItem.
+Since we don't know the exact field names until we get a real response, make it
+defensive with wide fallback chains:
+
+function normalizeGumtreeItem(item: Record<string, unknown>): Omit<ApifyExtractorResult, 'skipped' | 'error' | 'actor_used'> {
+  // Title
+  const title = (item["title"] ?? item["name"] ?? item["heading"] ?? null) as string | null;
+
+  // Price — may be string "$X,XXX" or object
+  let price: string | null = null;
+  const rawPrice = item["price"] ?? item["priceText"] ?? item["price_text"];
+  if (typeof rawPrice === "string") {
+    price = rawPrice;
+  } else if (typeof rawPrice === "object" && rawPrice !== null) {
+    const p = rawPrice as Record<string, unknown>;
+    price = (p["formatted"] ?? p["amount"] ?? p["value"] ?? null) as string | null;
+  }
+
+  // Description
+  const description = (item["description"] ?? item["body"] ?? null) as string | null;
+
+  // Seller
+  const sellerObj = item["seller"] as Record<string, unknown> | undefined;
+  const seller_name = (
+    item["sellerName"] ?? sellerObj?.["name"] ?? item["seller_name"] ?? null
+  ) as string | null;
+  const seller_profile_url = (
+    item["sellerUrl"] ?? sellerObj?.["profileUrl"] ?? sellerObj?.["url"] ?? null
+  ) as string | null;
+  const seller_member_since = (
+    item["memberSince"] ?? sellerObj?.["memberSince"] ?? null
+  ) as string | null;
+  const seller_review_count = (
+    item["reviewCount"] ?? sellerObj?.["reviewCount"] ?? null
+  ) as number | null;
+  const seller_rating = (
+    item["rating"] ?? sellerObj?.["rating"] ?? null
+  ) as number | null;
+
+  // Location — may be string or object
+  let location: string | null = null;
+  const rawLocation = item["location"] ?? item["locationText"] ?? item["suburb"];
+  if (typeof rawLocation === "string") {
+    location = rawLocation;
+  } else if (typeof rawLocation === "object" && rawLocation !== null) {
+    const l = rawLocation as Record<string, unknown>;
+    location = (l["text"] ?? l["display_name"] ?? l["suburb"] ?? null) as string | null;
+  }
+
+  // Condition
+  const condition = (item["condition"] ?? item["itemCondition"] ?? null) as string | null;
+
+  // Category
+  const category = (item["category"] ?? item["categoryName"] ?? null) as string | null;
+
+  // Listed date
+  const listed_date = (item["listedAt"] ?? item["postedAt"] ?? item["date"] ?? item["timestamp"] ?? null) as string | null;
+
+  // Images — may be array of strings or array of objects
+  const images: string[] = [];
+  const rawImages = item["images"] ?? item["imageUrls"] ?? item["photos"] ?? item["media"];
+  if (Array.isArray(rawImages)) {
+    for (const img of rawImages) {
+      if (typeof img === "string") {
+        images.push(img);
+      } else if (typeof img === "object" && img !== null) {
+        const imgObj = img as Record<string, unknown>;
+        const uri = imgObj["uri"] ?? imgObj["url"] ?? imgObj["src"] ?? imgObj["href"];
+        if (typeof uri === "string") images.push(uri);
+      }
+    }
+  }
+
+  return {
+    title, price, description,
+    seller_name, seller_profile_url, seller_member_since,
+    seller_review_count, seller_rating,
+    location, condition, category, listed_date,
+    images, attributes: {}, raw: item,
+  };
+}
+
+## UPDATED BRANCHING IN extractWithApify
+
+Update the platform branching to:
+
+  if (actorId === "apify/facebook-marketplace-scraper") {
+    normalized = normalizeFacebookMarketplaceItem(item);
+  } else if (platform === "gumtree") {
+    normalized = normalizeGumtreeItem(item);
+  } else {
+    normalized = normalizeGenericItem(item);
+  }
+
+## GUMTREE FALLBACK LOGIC
+
+In the extractWithApify function, for gumtree platform specifically,
+implement try-then-fallback:
+
+  let actorId = PLATFORM_ACTORS[platform];
+  if (!actorId) return buildEmptyResult() with skipped: true;
+
+  // For gumtree, try primary then fallback
+  if (platform === "gumtree") {
+    try {
+      const result = await runApifyActor(actorId, url, platform);
+      if (!result.error && result.images.length > 0 || result.title) {
+        return result;
+      }
+      // Primary returned empty — try fallback
+      const fallbackId = PLATFORM_ACTORS["gumtree_fallback"];
+      if (fallbackId) {
+        return await runApifyActor(fallbackId, url, platform);
+      }
+    } catch {
+      const fallbackId = PLATFORM_ACTORS["gumtree_fallback"];
+      if (fallbackId) {
+        return await runApifyActor(fallbackId, url, platform);
+      }
+    }
+  }
+
+Extract the core actor-calling logic into a private helper:
+  async function runApifyActor(actorId, url, platform): Promise<ApifyExtractorResult>
+
+This keeps the gumtree fallback logic clean.
+
+## CONSTRAINTS
+- Only modify apifyExtractor.ts
+- Do not change extractionPipeline.ts, normalizer.ts, platformConfigs.ts
+- Rebuild after: pnpm build --filter @workspace/api-server
+- Test with: https://www.gumtree.com.au/web/listing/cars-vans-utes/1337367984
