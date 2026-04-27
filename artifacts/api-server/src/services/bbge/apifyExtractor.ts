@@ -33,7 +33,6 @@ export const PLATFORM_ACTORS: Record<string, string> = {
   facebook_marketplace: "apify/facebook-marketplace-scraper",
   gumtree: "crawlerbros/gumtree-scraper",
   gumtree_fallback: "memo23/gumtree-cheerio",
-  depop: "barnett/depop-scraper",
   craigslist: "apify/craigslist-scraper",
 };
 

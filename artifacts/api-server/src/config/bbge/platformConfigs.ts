@@ -33,7 +33,7 @@ export const platformConfigs: PlatformConfig[] = [
   {
     name: "depop",
     domains: ["depop.com"],
-    methodOrder: ["apify", "metadata", "rendered_browser"],
+    methodOrder: ["metadata", "rendered_browser"],
     confidence: 95,
   },
   {
