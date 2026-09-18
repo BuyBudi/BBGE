@@ -47,3 +47,6 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# BBGE runtime screenshot captures - never commit
+artifacts/storage/screenshots/
