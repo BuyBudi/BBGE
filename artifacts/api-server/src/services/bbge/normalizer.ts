@@ -54,57 +54,6 @@ export interface NormalizedListing {
   };
 }
 
-// ─── Field source attribution ────────────────────────────────────────────────
-
-function buildFieldSources(params: {
-  title: string | null;
-  price: string | null;
-  description: string | null;
-  seller_name: string | null;
-  location: string | null;
-  ai: AiVisionResult | null | undefined;
-  apify: ApifyExtractorResult | null | undefined;
-  browser: BrowserResult | null;
-  metadata: MetadataResult | null;
-  aiRecoveryUsed: boolean;
-}): Record<string, string> {
-  const { title, price, description, seller_name, location, ai, apify, browser, metadata, aiRecoveryUsed } = params;
-  const sources: Record<string, string> = {};
-
-  if (title) {
-    if (ai?.title) sources["title"] = "ai_vision";
-    else if (apify?.title) sources["title"] = `apify:${apify.actor_used ?? "actor"}`;
-    else if (browser?.title) sources["title"] = `browser:${browser.selector_debug?.["title"] ?? "page_title"}`;
-    else if (metadata?.title) sources["title"] = "metadata";
-  }
-  if (price) {
-    if (ai?.price) sources["price"] = "ai_vision";
-    else if (apify?.price) sources["price"] = `apify:${apify.actor_used ?? "actor"}`;
-    else if (browser?.selector_debug?.["price"] === "fb_ai_recovery") sources["price"] = "ai_recovery";
-    else if (browser?.price) sources["price"] = `browser:${browser.selector_debug?.["price"] ?? "selector"}`;
-  }
-  if (description) {
-    if (ai?.description) sources["description"] = "ai_vision";
-    else if (apify?.description) sources["description"] = `apify:${apify.actor_used ?? "actor"}`;
-    else if (browser?.description) sources["description"] = `browser:${browser.selector_debug?.["description"] ?? "selector"}`;
-    else if (metadata?.description) sources["description"] = "metadata";
-  }
-  if (seller_name) {
-    if (ai?.seller_name) sources["seller_name"] = "ai_vision";
-    else if (apify?.seller_name) sources["seller_name"] = `apify:${apify.actor_used ?? "actor"}`;
-    else if (browser?.selector_debug?.["seller_name"] === "fb_ai_recovery") sources["seller_name"] = "ai_recovery";
-    else if (browser?.seller_name) sources["seller_name"] = `browser:${browser.selector_debug?.["seller_name"] ?? "selector"}`;
-  }
-  if (location) {
-    if (ai?.location) sources["location"] = "ai_vision";
-    else if (apify?.location) sources["location"] = `apify:${apify.actor_used ?? "actor"}`;
-    else if (browser?.selector_debug?.["location"] === "fb_ai_recovery") sources["location"] = "ai_recovery";
-    else if (browser?.location) sources["location"] = `browser:${browser.selector_debug?.["location"] ?? "selector"}`;
-  }
-  if (aiRecoveryUsed) sources["_ai_recovery"] = "fb_ai_recovery";
-  return sources;
-}
-
 // ─── Main normalize function ─────────────────────────────────────────────────
 
 export interface NormalizeInput {
@@ -143,75 +92,144 @@ export function normalize(params: NormalizeInput): NormalizedListing {
   const apifyOk = apify && !apify.skipped && !apify.error;
 
   // ─── Field merging ───────────────────────────────────────────────────────
-  const title =
-    ai?.title ||
-    (apifyOk ? apify.title : null) ||
-    browser?.title ||
-    metadata?.title ||
-    null;
+  const field_sources: Record<string, string> = {};
+  const firstTruthy = <T>(candidates: Array<[T | null | undefined, string]>) => {
+    for (const [value, source] of candidates) {
+      if (value) return { value, source };
+    }
+    return { value: null as T | null, source: null };
+  };
+  const firstPresent = <T>(candidates: Array<[T | null | undefined, string]>) => {
+    for (const [value, source] of candidates) {
+      if (value !== null && value !== undefined) return { value, source };
+    }
+    return { value: null as T | null, source: null };
+  };
+  const apifySource = `apify:${apify?.actor_used ?? "actor"}`;
+  const browserTitleSource = `browser:${browser?.selector_debug?.["title"] ?? "page_title"}`;
+  const browserSource = (field: string) =>
+    `browser:${browser?.selector_debug?.[field] ?? "selector"}`;
+  const browserOrRecoverySource = (field: string) =>
+    browser?.selector_debug?.[field] === "fb_ai_recovery"
+      ? "ai_recovery"
+      : browserSource(field);
 
-  const price =
-    ai?.price ||
-    (apifyOk ? apify.price : null) ||
-    browser?.price ||
-    null;
+  const titleResult = firstTruthy([
+    [ai?.title, "ai_vision"],
+    [apifyOk ? apify.title : null, apifySource],
+    [browser?.title, browserTitleSource],
+    [metadata?.title, "metadata"],
+  ]);
+  const title = titleResult.value;
+  if (titleResult.source) field_sources["title"] = titleResult.source;
 
-  const description =
-    ai?.description ||
-    (apifyOk ? apify.description : null) ||
-    browser?.description ||
-    metadata?.description ||
-    null;
+  const priceResult = firstTruthy([
+    [ai?.price, "ai_vision"],
+    [apifyOk ? apify.price : null, apifySource],
+    [browser?.price, browserOrRecoverySource("price")],
+  ]);
+  const price = priceResult.value;
+  if (priceResult.source) field_sources["price"] = priceResult.source;
 
-  const seller_name =
-    ai?.seller_name ||
-    (apifyOk ? apify.seller_name : null) ||
-    browser?.seller_name ||
-    null;
+  const descriptionResult = firstTruthy([
+    [ai?.description, "ai_vision"],
+    [apifyOk ? apify.description : null, apifySource],
+    [browser?.description, browserSource("description")],
+    [metadata?.description, "metadata"],
+  ]);
+  const description = descriptionResult.value;
+  if (descriptionResult.source) field_sources["description"] = descriptionResult.source;
 
-  const seller_profile_url =
-    ai?.seller_profile_url ||
-    (apifyOk ? apify.seller_profile_url : null) ||
-    null;
+  const sellerNameResult = firstTruthy([
+    [ai?.seller_name, "ai_vision"],
+    [apifyOk ? apify.seller_name : null, apifySource],
+    [browser?.seller_name, browserOrRecoverySource("seller_name")],
+  ]);
+  const seller_name = sellerNameResult.value;
+  if (sellerNameResult.source) field_sources["seller_name"] = sellerNameResult.source;
 
-  // Apify-only seller enrichment fields
-  const seller_member_since = (apifyOk ? apify.seller_member_since : null) ?? null;
-  const seller_review_count = (apifyOk ? apify.seller_review_count : null) ?? null;
-  const seller_rating = (apifyOk ? apify.seller_rating : null) ?? null;
+  const sellerProfileUrlResult = firstTruthy([
+    [ai?.seller_profile_url, "ai_vision"],
+    [apifyOk ? apify.seller_profile_url : null, apifySource],
+  ]);
+  const seller_profile_url = sellerProfileUrlResult.value;
+  if (sellerProfileUrlResult.source) field_sources["seller_profile_url"] = sellerProfileUrlResult.source;
 
-  const location =
-    ai?.location ||
-    (apifyOk ? apify.location : null) ||
-    browser?.location ||
-    null;
+  const sellerMemberSinceResult = firstPresent([
+    [apifyOk ? apify.seller_member_since : null, apifySource],
+  ]);
+  const seller_member_since = sellerMemberSinceResult.value;
+  if (sellerMemberSinceResult.source) field_sources["seller_member_since"] = sellerMemberSinceResult.source;
 
-  const condition =
-    ai?.condition ||
-    (apifyOk ? apify.condition : null) ||
-    null;
+  const sellerReviewCountResult = firstPresent([
+    [apifyOk ? apify.seller_review_count : null, apifySource],
+  ]);
+  const seller_review_count = sellerReviewCountResult.value;
+  if (sellerReviewCountResult.source) field_sources["seller_review_count"] = sellerReviewCountResult.source;
 
-  const category =
-    ai?.category ||
-    (apifyOk ? apify.category : null) ||
-    null;
+  const sellerRatingResult = firstPresent([
+    [apifyOk ? apify.seller_rating : null, apifySource],
+  ]);
+  const seller_rating = sellerRatingResult.value;
+  if (sellerRatingResult.source) field_sources["seller_rating"] = sellerRatingResult.source;
 
-  const listed_date_or_age =
-    ai?.listed_date_or_age ||
-    (apifyOk ? apify.listed_date : null) ||
-    null;
+  const locationResult = firstTruthy([
+    [ai?.location, "ai_vision"],
+    [apifyOk ? apify.location : null, apifySource],
+    [browser?.location, browserOrRecoverySource("location")],
+  ]);
+  const location = locationResult.value;
+  if (locationResult.source) field_sources["location"] = locationResult.source;
+
+  const conditionResult = firstTruthy([
+    [ai?.condition, "ai_vision"],
+    [apifyOk ? apify.condition : null, apifySource],
+  ]);
+  const condition = conditionResult.value;
+  if (conditionResult.source) field_sources["condition"] = conditionResult.source;
+
+  const categoryResult = firstTruthy([
+    [ai?.category, "ai_vision"],
+    [apifyOk ? apify.category : null, apifySource],
+  ]);
+  const category = categoryResult.value;
+  if (categoryResult.source) field_sources["category"] = categoryResult.source;
+
+  const listedDateOrAgeResult = firstTruthy([
+    [ai?.listed_date_or_age, "ai_vision"],
+    [apifyOk ? apify.listed_date : null, apifySource],
+  ]);
+  const listed_date_or_age = listedDateOrAgeResult.value;
+  if (listedDateOrAgeResult.source) field_sources["listed_date_or_age"] = listedDateOrAgeResult.source;
 
   const canonical_url = metadata?.canonical_url || browser?.page_url || null;
 
   // ─── Image merging ───────────────────────────────────────────────────────
   const imageSet = new Set<string>();
-  if (metadata?.image) imageSet.add(metadata.image);
-  if (browser?.images) browser.images.forEach((img) => imageSet.add(img));
-  if (ai?.images_detected) ai.images_detected.forEach((img) => imageSet.add(img));
+  const imageContributions: Array<[string, string]> = [];
+  const addImages = (source: string, values: string[]) => {
+    for (const image of values) {
+      if (!imageSet.has(image)) {
+        imageSet.add(image);
+        imageContributions.push([source, image]);
+      }
+    }
+  };
+  if (metadata?.image) addImages("metadata", [metadata.image]);
+  if (browser?.images) addImages("browser", browser.images);
+  if (ai?.images_detected) addImages("ai_vision", ai.images_detected);
   // Use Apify images when browser produced none
-  if (imageSet.size === 0 && apifyOk && apify.images.length > 0) {
-    apify.images.forEach((img) => imageSet.add(img));
+  const apifyImagesUsed = imageSet.size === 0 && !!apifyOk && apify.images.length > 0;
+  if (apifyImagesUsed) {
+    addImages(apifySource, apify.images);
   }
   const images = Array.from(imageSet).slice(0, 20);
+  const imageSources: string[] = [];
+  for (const [source, image] of imageContributions) {
+    if (images.includes(image) && !imageSources.includes(source)) imageSources.push(source);
+  }
+  if (imageSources.length > 0) field_sources["images"] = imageSources.join("+");
+  if (aiRecoveryUsed) field_sources["_ai_recovery"] = "fb_ai_recovery";
 
   const risk_relevant_observations: string[] = ai?.risk_relevant_observations || [];
 
@@ -274,13 +292,6 @@ export function normalize(params: NormalizeInput): NormalizedListing {
     if (seen.has(w)) return false;
     seen.add(w);
     return true;
-  });
-
-  // ─── Field sources ───────────────────────────────────────────────────────
-  const field_sources = buildFieldSources({
-    title, price, description, seller_name, location,
-    ai, apify: apify ?? null, browser: browser ?? null,
-    metadata: metadata ?? null, aiRecoveryUsed,
   });
 
   const selectorDebug: Record<string, string> = { ...browser?.selector_debug ?? {} };
