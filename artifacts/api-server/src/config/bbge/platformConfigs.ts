@@ -35,11 +35,13 @@ export const platformConfigs: PlatformConfig[] = [
     confidence: 95,
   },
   {
-    // Browser extractor handles Depop at 95% confidence.
+    // Apify (abotapi/depop-scraper) first. Measured 2026-09-19: Depop returns 403
+    // to server-side HTTP and to headless Chromium from this host, and the
+    // deployed image has no Chromium binary. rendered_browser kept as fallback.
     // metadata removed: Depop returns 403 on server-side HTTP.
     name: "depop",
     domains: ["depop.com"],
-    methodOrder: ["rendered_browser"],
+    methodOrder: ["apify", "rendered_browser"],
     confidence: 95,
   },
   {

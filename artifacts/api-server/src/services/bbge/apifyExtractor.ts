@@ -32,6 +32,7 @@ export interface ApifyExtractorResult {
 export const PLATFORM_ACTORS: Record<string, string> = {
   facebook_marketplace: "apify/facebook-marketplace-scraper",
   gumtree: "memo23/gumtree-cheerio",
+  depop: "abotapi/depop-scraper",
   craigslist: "apify/craigslist-scraper",
 };
 
@@ -113,6 +114,18 @@ function buildActorInput(actorId: string, url: string): Record<string, unknown> 
   }
   if (actorId === "curious_coder/facebook-marketplace") {
     return { urls: [url], getListingDetails: true, getAllListingPhotos: true, maxPagesPerUrl: 1 };
+  }
+  if (actorId === "abotapi/depop-scraper") {
+    // Verified 2026-09-19 on one live listing: url mode with fetchDetails
+    // returns item, seller and condition fields. Residential proxy set
+    // explicitly so the per-run cost cannot change under a default.
+    return {
+      mode: "url",
+      urls: [url],
+      maxListings: 1,
+      fetchDetails: true,
+      proxy: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
+    };
   }
   return { startUrls: [{ url }], maxItems: 1 };
 }
@@ -381,6 +394,107 @@ function normalizeGenericItem(
   };
 }
 
+// abotapi/depop-scraper, url mode with fetchDetails (verified 2026-09-19 on one
+// live listing).
+// NOT mapped, deliberately: sellerFirstName, sellerLastName, sellerPictureUrl and
+// sellerRaw. A private seller's real name and photo have no scoring use and must
+// not travel downstream; raw is a whitelist for the same reason.
+// seller_rating is left null: Depop rates 0-5 stars, and Chekka's
+// sellerCredibilityScore reads ratingValue as a percentage (5.0 would score as
+// 5%). The star value is kept in attributes.rating_out_of_5 until Chekka settles
+// one scale.
+// price is "<CUR> <amount>" so Chekka's parsePrice keeps the currency; emitted
+// only for the currencies parsePrice recognises, since any other would silently
+// become AUD there.
+const DEPOP_PARSEABLE_CURRENCIES = new Set(["AUD", "USD", "GBP", "EUR", "NZD"]);
+
+const DEPOP_RAW_KEYS = [
+  "id",
+  "slug",
+  "url",
+  "status",
+  "isOnSale",
+  "countryCode",
+  "price",
+  "currency",
+  "sellerId",
+  "sellerUsername",
+  "sellerReviewsRating",
+  "sellerReviewsTotal",
+  "sellerItemsSold",
+  "sellerLastSeen",
+  "sellerVerified",
+];
+
+function normalizeDepopItem(
+  item: Record<string, unknown>,
+): Omit<ApifyExtractorResult, "skipped" | "error" | "actor_used"> {
+  const str = (v: unknown): string | null =>
+    typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+
+  const amount = num(item["price"]);
+  const currency = str(item["currency"])?.toUpperCase() ?? null;
+  const price =
+    amount !== null && currency !== null && DEPOP_PARSEABLE_CURRENCIES.has(currency)
+      ? `${currency} ${amount.toFixed(2)}`
+      : null;
+
+  const username = str(item["sellerUsername"]);
+  const images = Array.isArray(item["pictures"])
+    ? (item["pictures"] as unknown[]).filter((p): p is string => typeof p === "string")
+    : [];
+
+  const attributes: Record<string, string> = {};
+  const put = (key: string, v: unknown): void => {
+    if (typeof v === "string" && v.length > 0) attributes[key] = v;
+    else if (typeof v === "number" || typeof v === "boolean") attributes[key] = String(v);
+  };
+  put("brand", item["brandName"]);
+  put("status", item["status"]);
+  put("is_on_sale", item["isOnSale"]);
+  put("country_code", item["countryCode"]);
+  put("rating_out_of_5", item["sellerReviewsRating"]);
+  put("seller_items_sold", item["sellerItemsSold"]);
+  put("seller_last_seen", item["sellerLastSeen"]);
+  put("seller_verified", item["sellerVerified"]);
+  put("shipping_cost", item["shippingCost"]);
+  if (Array.isArray(item["sizes"])) {
+    const names = (item["sizes"] as unknown[])
+      .map((s) =>
+        s !== null && typeof s === "object" && typeof (s as Record<string, unknown>)["name"] === "string"
+          ? ((s as Record<string, unknown>)["name"] as string)
+          : null,
+      )
+      .filter((s): s is string => s !== null);
+    if (names.length > 0) attributes["sizes"] = names.join(", ");
+  }
+
+  const raw: Record<string, unknown> = {};
+  for (const key of DEPOP_RAW_KEYS) {
+    if (key in item) raw[key] = item[key];
+  }
+
+  return {
+    title: str(item["title"]),
+    price,
+    description: str(item["description"]),
+    seller_name: username,
+    seller_profile_url: username ? `https://www.depop.com/${username}/` : null,
+    seller_member_since: null,
+    seller_review_count: num(item["sellerReviewsTotal"]),
+    seller_rating: null,
+    location: str(item["address"]),
+    condition: str(item["conditionName"]),
+    category: str(item["categoryName"]),
+    listed_date: null,
+    images,
+    attributes,
+    raw,
+  };
+}
+
 // ─── Core actor runner ────────────────────────────────────────────────────────
 // Calls one Apify actor, fetches the first dataset item, and normalises it.
 
@@ -414,6 +528,8 @@ async function runApifyActor(
   let normalized: Omit<ApifyExtractorResult, "skipped" | "error" | "actor_used">;
   if (actorId === "apify/facebook-marketplace-scraper") {
     normalized = normalizeFacebookMarketplaceItem(item);
+  } else if (actorId === "abotapi/depop-scraper") {
+    normalized = normalizeDepopItem(item);
   } else if (platform === "gumtree") {
     normalized = normalizeGumtreeItem(item);
   } else {
